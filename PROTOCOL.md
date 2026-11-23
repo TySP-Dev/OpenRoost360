@@ -198,6 +198,22 @@ firmware (flash read) or continued black-box experiments on `/config` using this
 **What the webapp CAN do for PINs today:** report disarm-by-type (owner/guest/hostage via
 `da`) and silently alert on hostage. Reading or writing PIN values is blocked on the schema.
 
+## Cloud→hub black-box tests — all negative (2026-11-22)
+
+The hub PUBACKs **everything** on `/config` and `/commands` (so a PUBACK means nothing) and
+reacted to none of these — no arm change, no published event at all:
+
+| Channel | Payloads |
+|---|---|
+| `/config` | empty; `{"gu":"…"}`; `{"cv":"0.0.9"}`; `{"pins":[{type,code,name}]}`; flat `{"ow","ho","ex":30}` (exit delay measured unchanged at 60 s) |
+| `/commands` (base) | `{"as":2}`, `{"as":"2"}`, `{"cmd":"arm","as":2}`, `{"cmd":"arm","mode":2}`, `{"armedMode":"home"}`, `{"cmd":"armSystem","armedMode":"home"}` |
+| `/commands/<sub>` for `arm`, `armSystem`, `settings`, `config`, `cmd`, `command`, `action`, `state`, `set` | each of `{"as":2}`, `{"armedMode":"home"}`, `{"cmd":"arm","as":2}`, bare `2` |
+
+So it isn't just the field names: either the hub expects a framing/encoding we haven't
+guessed (binary, signed, wrapped, versioned), or a subtopic name outside this list. Don't
+repeat these; the firmware dump is the efficient next step. The listener can target subtopics
+with a first line `@<sub>` in `command.payload`.
+
 ## Wi-Fi provisioning (soft-AP) — from app bundle v2.5.17
 
 Hub-native; no cloud involved. Decompiled from the Hermes bundle (`hermes-dec`); `scan`

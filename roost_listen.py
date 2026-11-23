@@ -170,13 +170,20 @@ def watcher():
             with open(cmd, "rb") as f:
                 payload = f.read().rstrip(b"\r\n")
             os.replace(cmd, cmd + ".sent")
+            # Optional first line "@<subfolder>" sends to /commands/<subfolder> instead of the
+            # base /commands topic (the hub subscribes to /commands/#).
+            sub = None
+            if payload.startswith(b"@"):
+                first, _, payload = payload.partition(b"\n")
+                sub = first[1:].strip().decode(errors="replace").strip("/") or None
             if not SESSIONS:
                 log("COMMAND_NOT_SENT", reason="no hub connected", **show(payload))
             for s in list(SESSIONS):
                 if s.cmd_topic:
+                    topic = s.cmd_topic + ("/" + sub if sub else "")
                     try:
-                        pid = s.publish(s.cmd_topic, payload)
-                        log("SENT_COMMAND", peer=s.peer, topic=s.cmd_topic, pid=pid, **show(payload))
+                        pid = s.publish(topic, payload)
+                        log("SENT_COMMAND", peer=s.peer, topic=topic, pid=pid, **show(payload))
                     except OSError as e:
                         log("SEND_FAILED", peer=s.peer, error=str(e))
 
