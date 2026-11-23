@@ -200,8 +200,8 @@ firmware (flash read) or continued black-box experiments on `/config` using this
 
 ## Wi-Fi provisioning (soft-AP) — from app bundle v2.5.17
 
-Hub-native; no cloud involved. Decompiled from the Hermes bundle (`hermes-dec`), not yet
-exercised against a live hub.
+Hub-native; no cloud involved. Decompiled from the Hermes bundle (`hermes-dec`); `scan`
+**confirmed live 2026-11-22** (`provision` not yet exercised).
 
 1. **Enter soft-AP mode:** press the grey button on the bottom of the SmartBase until the light
    ring **blinks purple** (blinking green is sensor-pairing mode — same button).
@@ -213,7 +213,16 @@ exercised against a live hub.
 ```json
 {"cmd": "scan", "cc": "<country>", "sct": "0"}
 ```
-Response: `{"scanList": [[ssid, rssi, sec], ...]}` (the app sorts by rssi, drops empty SSIDs).
+Response (live): `{"result":"success","scanList":[[ssid, rssi, sec], ...],"log":"[0]","enc":"0"}`
+— `sec` is a small integer (`2` for every WPA2 network seen), not a raw WICED enum. The app
+sorts by rssi and drops empty (hidden) SSIDs. The HTTP server takes one connection at a time;
+a request fired immediately after the previous one is refused — wait a second and retry.
+
+**Behaviour seen live:** entering purple mode makes the hub drop MQTT (clean DISCONNECT). The
+AP comes up on channel 6 and serves DHCP (client got `192.168.1.100`). About 45 s after
+the scan the hub went back to its saved Wi-Fi and MQTT **while still broadcasting the AP**
+(AP and station at the same time). A hub reboot cleared the AP. An open setup AP lets anyone
+in range re-provision the hub, so always reboot afterwards.
 
 **Provision**
 ```json
