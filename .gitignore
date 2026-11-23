@@ -1,0 +1,14 @@
+# Local-only: contains device MAC/id and LAN details (see CLAUDE.md §6 redaction rules)
+CLAUDE.md
+
+# App package (large, third-party)
+*.apk
+*.xapk
+
+# Listener runtime files
+roost_log.jsonl
+*.payload
+*.payload.sent
+fake.crt
+fake.key
+__pycache__/
