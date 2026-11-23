@@ -101,7 +101,7 @@ recovery path only ever pulls `acert.bin`, hub firmware updates must be cloud-tr
 | `bat` | Battery, raw units (keypad ≈ 2940, others 680–1010) **(?)** |
 | `rs` | RSSI at hub |
 | `fw`, `hw` | Sensor firmware / hardware |
-| `as` | Fixed per sensor type, does not follow arming — keypad/leak 7, doors 6, motion 4 (zone class?) **(?)** |
+| `as` | Per-sensor **alert mode** — the arm states in which this sensor triggers, as a bitmask matching hub `as` values: `1` always/24-h, `2` Home, `4` Away. Defaults seen: keypad/leak 7 (always), doors 6 (Home+Away), motion 4 (Away only). Set from the app per sensor via `setupSensorAlertMode {id, alertSetup}` **(?)** — bit meanings inferred from the defaults, not yet confirmed by a change |
 | `pi` | Counter / retry index **(?)** |
 | `cl` | Leak sensors: `[[t, temp °C, humidity %]]` |
 | `log` | `[t, code]`; `233` appears on door open, `16`, `1`, `2` seen on others |
@@ -172,8 +172,8 @@ then reports that sensor in normal `dj` events. So the webapp's "add/re-pair sen
 just: tell the user to hold the gray button, then watch for a `dj` with an `id` we have not
 seen before and surface it for naming. This needs nothing we have not already decoded.
 
-**Wi-Fi provisioning** is done during app setup (soft-AP at `http://192.168.1.1:81` seen in
-the app bundle). This is the only path to change Wi-Fi and is still un-reversed — defer.
+**Wi-Fi provisioning** is a direct-to-hub soft-AP API — fully decoded, see
+"Wi-Fi provisioning (soft-AP)" below.
 
 ## PIN model (from app bundle, Roost 360 v2.5.17)
 
@@ -197,3 +197,60 @@ firmware (flash read) or continued black-box experiments on `/config` using this
 
 **What the webapp CAN do for PINs today:** report disarm-by-type (owner/guest/hostage via
 `da`) and silently alert on hostage. Reading or writing PIN values is blocked on the schema.
+
+## Wi-Fi provisioning (soft-AP) — from app bundle v2.5.17
+
+Hub-native; no cloud involved. Decompiled from the Hermes bundle (`hermes-dec`), not yet
+exercised against a live hub.
+
+1. **Enter soft-AP mode:** press the grey button on the bottom of the SmartBase until the light
+   ring **blinks purple** (blinking green is sensor-pairing mode — same button).
+2. The hub broadcasts an **open** network `Roost-Base-XXXX`, where `XXXX` = last two bytes of the
+   hub MAC, uppercase, no colon (app joins it with `connectToSSID`, no password).
+3. All calls: `POST http://192.168.1.1:81`, `Content-Type: application/json`.
+
+**Scan**
+```json
+{"cmd": "scan", "cc": "<country>", "sct": "0"}
+```
+Response: `{"scanList": [[ssid, rssi, sec], ...]}` (the app sorts by rssi, drops empty SSIDs).
+
+**Provision**
+```json
+{"cmd": "provision", "cc": "<country>", "ssid": "<ssid>", "pwd": "<password>",
+ "sec": "<sec from scanList entry, as string>", "enc": "0"}
+```
+`sec` is opaque — echo back the value the scan returned for that network (likely a Cypress
+WICED `wiced_security_t` value). The app also uses `scan` with `cc: "0x00005355"` as a
+"am I connected to the hub AP?" probe.
+
+`cc` is a **Cypress WICED country code** (`'X' | 'Y'<<8`), sent as a decimal string:
+`21333` = `0x5355` "US" (used for US, Canada, Brazil), `16967` = `0x4247` (EU countries,
+Australia, China). This also identifies the hub's Wi-Fi module as WICED-based (`wfw`).
+
+## App → cloud API — from app bundle v2.5.17
+
+Cloud Functions at `https://us-central1-roostprod.cloudfunctions.net`, all `POST` JSON with a
+session `Authorization` header. This is the half Roost's servers translated into `/config`
+and `/commands` for the hub; documented here as the vocabulary to target.
+
+| Call | Body | Notes |
+|---|---|---|
+| `armSystem` | `{id, armedMode}` | `armedMode`: `"off"` / `"home"` / `"away"` (hub reports `as` 0/2/4); app also tracks `exitDelay` |
+| `createPin` / `updatePin` | `{id, owner: "1234"}` · `{id, hostage: "1234"}` · `{id, guest: {name, pin}}` | One owner, one hostage, named guests; 4 digits |
+| `deletePin` | `{id, …}` | |
+| `getAccessList` | `{id}` | Returns list of `{id, name, …}` entries (Owner / Hostage / Guest) |
+| `setupSensorAlertMode` | `{id: <sensor>, alertSetup}` | Per-sensor alert mode — almost certainly the hub's `dj.as` |
+| `/updateDevice` | `{id, location, name, group, imageUploaded, tempUnitsFahrenheit, tempAlert, tl, th, humAlert, hl, hh, dc, en, ex}` | `dc` door chime (`1` = on), `en` entry delay, `ex` exit delay, `tl`/`th` temp low/high, `hl`/`hh` humidity low/high |
+| `/getDevice`, `/deleteDevice`, `/getHistory {sensor, count}` | | |
+| `associateBase` | `{address, qrCode}` | Claims a hub to an account |
+| `getConfig` | — | **App** config (feature flags, branding, location/name lists) — *not* hub config |
+
+**Key observation:** the cloud's device documents use the **same terse keys as the hub**
+(`dc`, `en`, `ex`, `as`, `tl`/`th`, `hl`/`hh` are read straight off device objects in the app),
+so the cloud→hub transform may be thinner than assumed — plausibly `/config` carries
+per-device objects with these keys. Untested; any `/config` experiment must still include the
+owner PIN and be followed by a keypad disarm check.
+
+No firmware-update/OTA call exists in the app (it only *displays* `firmwareRevision`), so hub
+firmware updates were entirely cloud-driven.
