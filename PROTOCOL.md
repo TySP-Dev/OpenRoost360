@@ -17,7 +17,12 @@ Items marked **(?)** are inferred from one test run and still need confirming.
 5. Keepalive PINGREQ every 60 s.
 - If the server goes away (restart), the hub reconnects on its own within ~1 min.
 - First TLS attempt each time is dropped by the hub and retried immediately; harmless.
-- After a failure the hub looks up `roostfiles.s3.amazonaws.com` (purpose unknown, likely firmware).
+- After a failure (e.g. a bad `getCurrentTime` reply) the hub fetches `GET /acert.bin` from
+  `roostfiles.s3.amazonaws.com` — its cert/endpoint bundle, see below. That is the **only**
+  request in the recovery path: even when served the genuine file over a keep-alive
+  connection, it makes no follow-up request and no other DNS lookups, then goes back to
+  retrying `getCurrentTime` every 60 s. Once the time reply is good again it connects to
+  MQTT on its own — no reboot needed.
 
 **Power behaviour:** on mains (`pw: 1`) the hub stays connected and publishes every event live.
 On battery (`pw: 0`) it connects, gets config, and disconnects — events are not sent live.
@@ -40,7 +45,50 @@ On battery (`pw: 0`) it connects, gets config, and disconnects — events are no
 | `cs` | Cellular signal; `99` = none |
 | `icc` | SIM ICCID (redact when sharing) |
 | `log` | Hub diary `[t, code]`: `8` online, `10` connect attempt failed/retrying, `19` connection lost **(?)**, `25` boot **(?)** |
-| `bfw` `wfw` `sfw` `cfw` `cv` `hw` | Firmware: hub, Wi-Fi, sub-GHz radio, LTE modem, config ver., hardware |
+| `bfw` `wfw` `sfw` `cfw` `hw` | Firmware: hub, Wi-Fi, sub-GHz radio, LTE modem; hardware |
+| `cv` | Version of the installed **cert/endpoint bundle** (`acert.bin`, see below) — *not* a config-schema version |
+
+## Cert/endpoint bundle (`acert.bin`)
+
+Fetched from `roostfiles.s3.amazonaws.com/acert.bin` in the recovery path. A tiny archive
+(all integers big-endian; CRCs are standard CRC-32, all verified):
+
+```
+0x000  version string, 16 bytes, NUL-padded   ("0.0.7" — matches the hub's cv field)
+0x010  u32 file count (3)
+0x014  u32 unknown (7)
+0x018  file table, 24 bytes per entry: u32 size, u32 CRC-32, name[16] NUL-padded
+0x400  file data, concatenated in table order
+```
+
+| File | Contents |
+|---|---|
+| `wcert.bin` | 4096-byte binary blob, magic `11f1 12f2 … 18f8`, 0xFF-padded — likely the Wi-Fi module's CA store |
+| `ccert.bin` | Root CAs as length-prefixed PEMs: Amazon Root CA 1, GlobalSign ECC R4, Google Trust Services LTSR/R1–R4 (likely for the LTE modem) |
+| `url.txt` | MQTT broker hostname: `us-central1-mqtt.clearblade.com` |
+
+So the bundle **sets the hub's MQTT host**. A second bundle in the bucket, `bcert.bin`
+(version `1.1.1`, Jul 2024), has the same layout and the same `wcert.bin` but
+`url.txt` = `iotcore.getroost.com` — Roost's post-ClearBlade broker. Hubs reporting
+`cv: 0.0.7` never moved over. Serving our own bundle (with `url.txt` pointing at a local
+name) could remove the need for DNS/iptables redirection, but it's an untested write to the
+hub — don't try it without a recovery plan.
+
+## The `roostfiles` S3 bucket
+
+ListBucket is denied (403); GETs are public. With listing denied, S3 returns 403 for missing
+keys too, so only a 200 is meaningful. Known objects:
+
+| Key | Size | Notes |
+|---|---|---|
+| `acert.bin` | 15953 | Bundle v0.0.7 (above) |
+| `bcert.bin` | 17284 | Bundle v1.1.1, `iotcore.getroost.com` |
+| `xs.4.3.0.bin`, `xs.4.4.0.bin`, `xs.4.5.0.bin` | 122880 each | **Sensor** firmware (keypad/door/motion/leak `fw` versions). Plain ARM Thumb, TI-RTOS strings (TI SimpleLink sub-GHz MCU). 4.3.0→4.4.0 differs only in version/CRC bytes. Almost no strings; nothing about `/config` (sensors never see it) |
+
+Not found (403) — hub firmware under any obvious name: `xb.5.0.1.bin` and neighbouring
+versions, `xe.4.4.0.bin`, and the hub's `sfw`/`wfw`/`cfw`/`hw` strings as keys. Since the
+recovery path only ever pulls `acert.bin`, hub firmware updates must be cloud-triggered
+(e.g. a `/commands` message with a URL), not discovered by the hub.
 
 ## Sensor sub-object (`dj`)
 

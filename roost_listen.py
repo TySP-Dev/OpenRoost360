@@ -257,12 +257,63 @@ def _handle_mqtt(conn, peer, first):
             log("MQTT_OTHER", peer=peer, type=ptype, body=body.hex())
 
 
+FILES = os.path.join(HERE, "files")   # files placed here are served by basename (S3 stand-in)
+
+
+def serve_file(conn, peer, req_line, headers):
+    """Serve files/<basename of path> if present. Returns True if served."""
+    parts = req_line.split()
+    if len(parts) < 2 or parts[0] not in ("GET", "HEAD"):
+        return False
+    name = os.path.basename(parts[1].split("?", 1)[0])
+    path = os.path.join(FILES, name)
+    if not name or not os.path.isfile(path):
+        return False
+    with open(path, "rb") as f:
+        body = f.read()
+    total, status, extra = len(body), b"200 OK", b""
+    rng = headers.get("range", "")
+    if rng.startswith("bytes="):
+        a, _, b = rng[6:].split(",")[0].partition("-")
+        start = int(a) if a else max(0, total - int(b))
+        end = min(int(b), total - 1) if (a and b) else total - 1
+        body = body[start:end + 1]
+        status = b"206 Partial Content"
+        extra = f"Content-Range: bytes {start}-{end}/{total}\r\n".encode()
+    keep = headers.get("connection", "").lower() == "keep-alive"
+    log("FILE_SERVED", peer=peer, file=name, bytes=len(body), total=total, range=rng or None)
+    conn.sendall(b"HTTP/1.1 " + status + b"\r\nContent-Type: application/octet-stream\r\n"
+                 + extra + b"Content-Length: " + str(len(body)).encode()
+                 + (b"\r\nConnection: keep-alive" if keep else b"\r\nConnection: close")
+                 + b"\r\n\r\n" + (b"" if parts[0] == "HEAD" else body))
+    return keep
+
+
 def handle_http(conn, peer, first):
+    # Loop for keep-alive: after a served file the hub may issue more requests on this
+    # connection, and we want every one of them in the log.
     data = bytes([first])
+    while True:
+        if not _handle_http_one(conn, peer, data):
+            return
+        conn.settimeout(15)
+        try:
+            data = conn.recv(4096)
+        except (socket.timeout, OSError):
+            return
+        if not data:
+            return
+        log("HTTP_KEEPALIVE_NEXT", peer=peer)
+
+
+def _handle_http_one(conn, peer, data):
     conn.settimeout(3)
     try:
         while b"\r\n\r\n" not in data:
-            data += conn.recv(4096)
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            data += chunk
         head, _, rest = data.partition(b"\r\n\r\n")
         clen = 0
         for line in head.split(b"\r\n")[1:]:
@@ -275,10 +326,19 @@ def handle_http(conn, peer, first):
         head, rest = data, b""
     lines = head.split(b"\r\n")
     req_line = lines[0].decode(errors="replace")
-    host = next((l.split(b":", 1)[1].strip().decode(errors="replace")
-                 for l in lines[1:] if l.split(b":", 1)[0].strip().lower() == b"host"), "")
+    headers = {}
+    for l in lines[1:]:
+        k, _, v = l.partition(b":")
+        headers[k.strip().lower().decode(errors="replace")] = v.strip().decode(errors="replace")
+    host = headers.get("host", "")
     log("HTTP_REQUEST", peer=peer, request=req_line, host=host,
         head=head.decode(errors="replace"), **show(rest))
+    if b"getcurrenttime" not in req_line.lower().encode():
+        try:
+            if os.path.isdir(FILES) and serve_file(conn, peer, req_line, headers):
+                return True   # keep-alive: wait for the next request
+        except Exception as e:
+            log("FILE_SERVE_FAILED", peer=peer, error=repr(e))
     if b"getcurrenttime" in req_line.lower().encode():
         # Template in time.payload next to this script: {t} = epoch seconds, {ms} = epoch ms.
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time.payload")
@@ -296,6 +356,7 @@ def handle_http(conn, peer, first):
         # Anything else (e.g. an S3 firmware/config fetch): log the path, return 404 so the
         # hub treats it as "nothing here" and carries on without applying a bogus file.
         conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    return False
 
 
 def serve(port, ctx):
