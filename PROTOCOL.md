@@ -234,6 +234,12 @@ Response (live): `{"result":"success","scanList":[[ssid, rssi, sec], ...],"log":
 sorts by rssi and drops empty (hidden) SSIDs. The HTTP server takes one connection at a time;
 a request fired immediately after the previous one is refused — wait a second and retry.
 
+**API surface is exactly two commands.** The app bundle only ever POSTs `cmd:scan` or
+`cmd:provision` to `:81` — no GET routes, no other `cmd` values. The server is a single
+minimal handler: a bare `GET /` or unexpected/back-to-back requests wedge it (seen 2026-11-22
+— after a port scan and a plain GET it stopped answering until a hub reboot). Don't black-box
+it; there's nothing there the app doesn't already use. Port scan of the hub AP found only 81 open.
+
 **Behaviour seen live:** entering purple mode makes the hub drop MQTT (clean DISCONNECT). The
 AP comes up on channel 6 and serves DHCP (client got `192.168.1.100`). About 45 s after
 the scan the hub went back to its saved Wi-Fi and MQTT **while still broadcasting the AP**
