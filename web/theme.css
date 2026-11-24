@@ -1,0 +1,16 @@
+/* Hearth design tokens — shared by the app (index.html) and first-run setup (setup.html) */
+:root{
+  --bg:#f5efe6; --card:#fffcf7; --card2:#f9f3ea; --line:#e8ddcf; --ink:#2c241f; --muted:#8a7b6e;
+  --accent:#c8553d; --on-accent:#fff; --ok:#4f8a6b; --warn:#cf8a2b; --crit:#c2362b; --water:#3a78bb;
+  --shadow:0 1px 2px rgba(60,40,20,.06),0 8px 24px rgba(60,40,20,.07);
+  --display:'Fraunces',Georgia,serif; --body:'Figtree',system-ui,sans-serif;
+  --r:20px; --gap:18px; --pad:22px; --ring-size:190px; --header-h:61px; color-scheme:light;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#1a1613; --card:#24201c; --card2:#2c2722; --line:#3a332c; --ink:#f3ebe1; --muted:#a59585;
+  --ok:#6fb08c; --warn:#e3a24a; --crit:#ec5b4f; --water:#6aa6e6; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; } }
+:root[data-theme="dark"]{
+  --bg:#1a1613; --card:#24201c; --card2:#2c2722; --line:#3a332c; --ink:#f3ebe1; --muted:#a59585;
+  --ok:#6fb08c; --warn:#e3a24a; --crit:#ec5b4f; --water:#6aa6e6; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; }
+:root[data-density="compact"]{ --gap:12px; --r:14px; --pad:16px }
+h1,h2,h3{font-weight:650}

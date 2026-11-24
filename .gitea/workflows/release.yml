@@ -1,0 +1,22 @@
+# Optional: publish a ready-made image to this Gitea's container registry when a release tag is pushed.
+# Needs a Gitea Actions runner and two repository secrets: REGISTRY_USER and REGISTRY_TOKEN (a token with
+# write:package). Without it, servers simply build locally with ./update.sh.
+name: release-image
+on:
+  push:
+    tags: ['v*.*.*']
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the version in the code
+        run: |
+          code="v$(python3 -c 'import openroost; print(openroost.__version__)')"
+          [ "$code" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} != code version $code"; exit 1; }
+      - name: Build and push
+        run: |
+          img=git.tysstech.com/tyss-dev/openroost360
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login git.tysstech.com -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+          docker build --build-arg GIT_COMMIT="${GITHUB_SHA::7}" -t "$img:${GITHUB_REF_NAME}" -t "$img:latest" .
+          docker push "$img:${GITHUB_REF_NAME}" && docker push "$img:latest"

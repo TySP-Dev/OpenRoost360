@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenRoost360</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="kit.css">
+<link rel="stylesheet" href="theme.css">
+<style>
+
+
+header.top{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.top-in{max-width:1120px;margin:0 auto;display:flex;align-items:center;gap:14px;padding:12px 20px}
+.mark{width:36px;height:36px;border-radius:12px;background:var(--accent);display:grid;place-items:center;color:#fff;flex:none}
+.site{display:flex;align-items:center;gap:10px;min-width:0}
+.site h1{font-size:22px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+nav.tabs{display:flex;gap:4px;margin-left:auto}
+nav.tabs a{display:flex;align-items:center;gap:7px;padding:8px 14px;border-radius:99px;color:var(--muted);text-decoration:none;font-weight:600;font-size:14px}
+nav.tabs a.on{background:var(--ink);color:var(--bg)}
+nav.tabs a:not(.on):hover{background:var(--card)}
+main{max-width:1120px;margin:0 auto;padding:22px 20px 40px}
+
+.cols{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:var(--gap);align-items:start}
+.hero{display:grid;grid-template-columns:var(--ring-size) minmax(0,1fr);gap:28px;align-items:center}
+.hero h2{font-size:clamp(24px,3.2vw,30px);line-height:1.15}
+main{container-type:inline-size} .cols>.stack{container-type:inline-size}
+@container (max-width:520px){ .hero{grid-template-columns:minmax(0,1fr);justify-items:center;text-align:center;gap:18px}
+  .hero>div{width:100%;max-width:380px} .hero .modes{display:flex;width:100%} .hero .modes button{flex:1;min-width:0;justify-content:center;padding-left:6px;padding-right:6px} }
+.hero p{color:var(--muted);margin:8px 0 16px}
+.stat{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat div{background:var(--card2);border-radius:14px;padding:12px}
+.stat b{display:block;font-family:var(--display);font-size:22px}
+.stat span{font-size:12px;color:var(--muted)}
+
+#byroom .rooms{grid-template-columns:repeat(auto-fill,minmax(176px,1fr))}
+.set-wrap{display:grid;grid-template-columns:260px minmax(0,1fr);gap:var(--gap);align-items:start}
+.set-nav{position:sticky;top:80px;display:flex;flex-direction:column;gap:4px}
+.set-nav a{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:14px;text-decoration:none;color:var(--ink);font-weight:600}
+.set-nav a .ico{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;background:var(--card);border:1px solid var(--line);color:var(--muted);flex:none}
+.set-nav a.on{background:var(--card);box-shadow:var(--shadow)} .set-nav a.on .ico{background:var(--accent);color:#fff;border-color:var(--accent)}
+.set-nav a small{display:block;font-size:11px;color:var(--warn);font-weight:600}
+.set-nav a.blocked .ico{position:relative}
+
+@media (min-width:821px) and (max-width:1040px){
+  .site{flex-direction:column;align-items:flex-start;gap:3px}
+  .site .pill{padding:1px 8px;font-size:11px}
+  nav.tabs a{padding:8px 11px}
+  .top-in{gap:12px}
+}
+@media (max-width:820px){
+  body{padding-bottom:84px} :root{--save-bottom:90px; --ring-size:170px; --pad:16px; --header-h:57px; --toast-top:68px}
+  /* bottom tab bar: same ink pill as desktop, sitting behind the icon */
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;margin:0;justify-content:space-around;background:var(--card);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom));z-index:20}
+  nav.tabs a{flex:1;flex-direction:column;gap:4px;font-size:11px;padding:2px 4px;border-radius:14px;min-height:48px;justify-content:center}
+  nav.tabs a .ic{width:52px;height:30px;padding:6px 17px;border-radius:99px;box-sizing:border-box;transition:background .15s}
+  nav.tabs a.on{background:none;color:var(--ink)}
+  nav.tabs a.on .ic{background:var(--ink);color:var(--bg)}
+  nav.tabs a:not(.on):hover{background:none} nav.tabs a:not(.on):hover .ic{background:var(--card2)}
+  header.top{backdrop-filter:none;background:var(--bg)}
+  .user{margin-left:auto}
+  .set-wrap{grid-template-columns:minmax(0,1fr)}
+  /* home: one column, but keep desktop's priority — status, stats and health before the room list */
+  .cols{grid-template-columns:minmax(0,1fr)} .cols>.stack{display:contents;container-type:normal}
+  #hero{order:1} .h-stat{order:2} #health{order:3} .h-rooms{order:4} .h-act{order:5} #al{order:0}
+  #health:empty{display:none}
+  /* settings nav: same items, icons and active style as desktop, scrolled sideways and pinned under the header */
+  .set-nav{position:sticky;top:var(--header-h);z-index:6;flex-direction:row;overflow-x:auto;scrollbar-width:none;background:var(--bg);margin:-16px -16px 0;padding:10px 16px;border-bottom:1px solid var(--line);scroll-snap-type:x proximity}
+  .set-nav::-webkit-scrollbar{display:none}
+  .set-nav a{white-space:nowrap;padding:7px 12px 7px 7px;gap:8px;scroll-snap-align:center;flex:none}
+  .set-nav a .ico{width:26px;height:26px;border-radius:8px}
+  .set-nav a .ico .ic{width:15px;height:15px}
+  .set-nav a small{display:none}
+  .set-nav a.blocked .ico::after{content:"";position:absolute;top:-3px;right:-3px;width:9px;height:9px;border-radius:50%;background:var(--warn);border:2px solid var(--bg)}
+  .top-in{padding:10px 16px} main{padding:16px}
+  #byroom .rooms{grid-template-columns:repeat(auto-fill,minmax(136px,1fr))}
+}
+@media (max-width:480px){
+  /* keep the hub status visible, tucked under the site name instead of crowding the row */
+  .site{flex-direction:column;align-items:flex-start;gap:3px}
+  .site h1{font-size:19px}
+  .site .pill{padding:1px 8px;font-size:11px}
+  :root{--header-h:66px}
+  }
+</style>
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <div class="mark" id="mark"></div>
+  <div class="site"><h1 id="sitename">OpenRoost360</h1><span id="status"></span></div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="user" id="user"></div>
+</div></header>
+<main id="main"></main>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

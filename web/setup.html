@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenRoost360 · Setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="kit.css">
+<link rel="stylesheet" href="theme.css">
+<style>
+/* first-run setup wizard — same tokens and components as the app */
+[hidden]{display:none!important}
+:root{ --pad:22px }
+header.su-top{border-bottom:1px solid var(--line);background:var(--bg)}
+.su-top-in{max-width:760px;margin:0 auto;display:flex;align-items:center;gap:12px;padding:12px 20px}
+.mark{width:36px;height:36px;border-radius:12px;background:var(--accent);display:grid;place-items:center;color:#fff;flex:none}
+.su-top h1{font-size:22px;line-height:1}
+.su-top small{display:block;color:var(--muted);font-size:12px;font-family:var(--body);font-weight:600;margin-top:3px}
+.su-skip{margin-left:auto;font-size:13px;font-weight:600;color:var(--muted);text-decoration:none}
+.su-skip:hover{color:var(--accent)}
+main.su{max-width:760px;margin:0 auto;padding:22px 20px 120px}
+
+.su-prog{margin-bottom:16px}
+.su-step-l{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.su-prog h2{font-size:clamp(24px,3.4vw,30px);margin:4px 0 12px}
+.su-bar{display:grid;grid-template-columns:repeat(var(--n),1fr);gap:6px}
+.su-bar i{height:6px;border-radius:99px;background:var(--line)}
+.su-bar i.done{background:var(--ok)} .su-bar i.on{background:var(--accent)}
+
+.su-card{display:flex;flex-direction:column;gap:14px}
+.note{margin:0}
+.su-card p{margin:0;color:var(--muted)} .su-card p b{color:var(--ink)}
+.su-lead{font-size:16px}
+.su-list{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.su-list li{display:flex;gap:12px;align-items:flex-start}
+.su-list li>.ic{color:var(--accent);margin-top:2px}
+.su-list b{display:block}.su-list span{color:var(--muted);font-size:14px}
+
+/* hub wifi steps */
+.su-steps{counter-reset:s;list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
+.su-steps>li{counter-increment:s;display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px}
+.su-steps>li::before{content:counter(s);width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--card2);font-weight:700;font-size:14px;color:var(--muted)}
+.su-steps>li.done::before{content:"✓";background:var(--ok);color:#fff}
+.su-steps>li.cur::before{background:var(--accent);color:#fff}
+.su-steps>li.todo{opacity:.5}
+.su-steps>li>div>b{display:block}.su-steps p{font-size:14px;margin-top:2px}
+.su-steps .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+
+/* sensors */
+.su-sens{display:flex;flex-direction:column;gap:10px}
+.su-sen{display:grid;grid-template-columns:40px minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:center;padding:12px;border-radius:16px;background:var(--card2);border:1px solid transparent;transition:border-color .3s,box-shadow .3s}
+.su-sen .ico{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--card);color:var(--ok)}
+.su-sen .meta-l{grid-column:2/-1;display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:-4px}
+.su-sen .meta-l code{font-size:11px}
+.su-sen.ping{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+.su-sen .ping-l{display:none;color:var(--accent);font-weight:700}
+.su-sen.ping .ping-l{display:inline}
+.su-sen.fresh{animation:fadeIn .4s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}}
+
+/* summary */
+.su-sum{list-style:none;margin:0;padding:0}
+.su-sum li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+.su-sum li:last-child{border:0}
+.su-sum .st{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--ok);color:#fff}.su-sum .st .ic{width:14px;height:14px}
+.su-sum .warn .st{background:var(--warn)} .su-sum .skip .st{background:var(--line);color:var(--muted)}
+.su-sum small{display:block;color:var(--muted)}
+
+/* footer nav */
+.su-nav{position:fixed;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-top:1px solid var(--line);z-index:20}
+.su-nav-in{max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:center;padding:12px 20px calc(12px + env(safe-area-inset-bottom))}
+.su-nav .hint{margin-right:auto;font-size:13px;color:var(--muted)}
+.su-nav .btn{min-width:110px}
+
+@media (max-width:640px){
+  :root{--pad:16px}
+  .su-top-in{padding:10px 16px} main.su{padding:16px 16px 120px}
+  .su-sen{grid-template-columns:40px minmax(0,1fr)}.su-sen .combo{grid-column:2}.su-sen .meta-l{grid-column:1/-1;margin-top:0}
+  .su-nav-in{padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+  .su-nav .hint{display:none}.su-nav .btn{flex:1;min-width:0}
+}
+</style>
+</head>
+<body>
+<header class="su-top"><div class="su-top-in">
+  <div class="mark" id="mark"></div>
+  <div><h1>OpenRoost360</h1><small>First-time setup</small></div>
+</div></header>
+<main class="su">
+  <div class="su-prog"><div class="su-step-l" id="stepl"></div><h2 id="steph"></h2><div class="su-bar" id="bar"></div></div>
+  <section class="card su-card" id="body"></section>
+</main>
+<nav class="su-nav" aria-label="Setup steps"><div class="su-nav-in">
+  <span class="hint" id="hint"></span>
+  <button type="button" class="btn" id="back">Back</button>
+  <button type="button" class="btn btn-primary" id="next">Continue</button>
+</div></nav>
+<script src="core.js"></script>
+<script src="setup.js"></script>
+</body>
+</html>

@@ -1,14 +1,69 @@
-# Local-only: contains device MAC/id and LAN details (see CLAUDE.md §6 redaction rules)
+# ---- Never commit: private to this install ----------------------------------------------------
+# Local notes with device MAC/id and LAN details (see CLAUDE.md §6 redaction rules)
 CLAUDE.md
+.claude/settings.local.json
 
-# App package (large, third-party)
+# OpenRoost server data: database, master key (incl. an interrupted rotation's master.key.next),
+# setup code, TLS certificate, protocol log (contains hub id, SIM number, Wi-Fi name)
+data/
+master.key
+master.key.*
+*.db
+*.db-wal
+*.db-shm
+*.db.before-restore
+SETUP-CODE.txt
+wire.jsonl
+wire.jsonl.*
+
+# Encrypted backups and any private keys or certificates
+*.orb
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Docker settings (passwords, API keys) and bundled-service data
+.env
+.env.*
+!.env.example
+pihole/
+
+# ---- Research leftovers -------------------------------------------------------------------------
+# App package and its decompiled output (large, third-party)
 *.apk
 *.xapk
+*.apks
+apk/
+apk-out/
+decompiled/
+index.android.bundle
+out.js
 
-# Listener runtime files
+# Research listener (roost_listen.py) runtime files
 roost_log.jsonl
+roost_log.jsonl.*
 *.payload
 *.payload.sent
-fake.crt
-fake.key
+files/
+.serve.pids
+
+# Flash dumps (planned): device-specific, possibly containing keys
+*.bin
+!roostfiles-certs/*.bin
+dump*/
+_*.extracted/
+
+# ---- Tooling ------------------------------------------------------------------------------------
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
