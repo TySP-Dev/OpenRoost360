@@ -1,5 +1,5 @@
 """TEST TOOL ONLY: a stand-in SmartBase that talks to the OpenRoost listener exactly like the real hub
-(TLS getCurrentTime, MQTT 3.1.1 connect/subscribe/publish, PROTOCOL.md message formats).
+(TLS getCurrentTime, MQTT 3.1.1 connect/subscribe/publish, docs/PROTOCOL.md message formats).
 Not used by the app. Used by tests/test_hub.py and for trying the dashboard without hardware.
 
     python3 tests/fakehub.py --port 8883 scenario      # connect, report sensors, run a short alarm sequence

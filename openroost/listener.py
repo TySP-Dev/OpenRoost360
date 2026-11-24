@@ -8,7 +8,7 @@ redirect. On one TLS port it answers both:
 The hub doesn't validate certificates, so a self-signed one works (made once, kept in the data folder).
 
 Safety: the hub only ever receives an empty /config. Nothing is sent on /commands (the format
-isn't known; see PROTOCOL.md) — publish() exists for when it is.
+isn't known; see docs/PROTOCOL.md) — publish() exists for when it is.
 """
 import collections, datetime, json, os, socket, ssl, threading, time
 from cryptography import x509
@@ -284,7 +284,7 @@ class Listener:
                 self.trace(ip, 'packet', type=ptype, flags=flags, hex=body[:400].hex())
 
     def publish(self, sub, payload):
-        """Send to the hub's /commands/<sub>. Unused until the command format is known (PROTOCOL.md)."""
+        """Send to the hub's /commands/<sub>. Unused until the command format is known (docs/PROTOCOL.md)."""
         for s in list(self.sessions):
             if s.cmd_topic:
                 topic = s.cmd_topic + ('/' + sub if sub else '')

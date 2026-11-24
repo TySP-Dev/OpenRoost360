@@ -1,5 +1,5 @@
 """Hub state engine: turns what the listener receives from the SmartBase into hub status, sensors,
-arm state, alerts and history. Every rule here comes from PROTOCOL.md.
+arm state, alerts and history. Every rule here comes from docs/PROTOCOL.md.
 
 Inputs (called by openroost.listener): on_time_request, on_connect, on_subscribe, on_publish,
 on_disconnect. Outputs: the store (persisted), the bus (live updates) and the notifier.
@@ -14,7 +14,7 @@ AS_LABEL = {0: 'Disarmed', 2: 'Armed Home', 8: 'Arming Away', 4: 'Armed Away'}
 DA_LABEL = {'ow': 'owner PIN', 'gu': 'guest PIN', 'ho': 'hostage PIN'}
 STATE_LABEL = {'open': 'Open', 'closed': 'Closed', 'motion': 'Motion', 'clear': 'Clear', 'wet': 'Wet', 'dry': 'Dry', 'ok': 'OK'}
 URGENT = ('intrusion', 'fire', 'panic', 'duress', 'leak')
-DEFAULT_EXIT, DEFAULT_ENTRY = 60, 45          # seen on a real hub (PROTOCOL.md "Example alarm sequence")
+DEFAULT_EXIT, DEFAULT_ENTRY = 60, 45          # seen on a real hub (docs/PROTOCOL.md "Example alarm sequence")
 
 
 def bat_pct(kind, raw):
@@ -148,7 +148,7 @@ class Hub:
         if not isinstance(msg, dict): return
         with self.lock: self._handle(msg)
 
-    # ------------------------------------------------------------- message handling (PROTOCOL.md)
+    # ------------------------------------------------------------- message handling (docs/PROTOCOL.md)
     def _handle(self, m):
         now = time.time()
         ev = str(m.get('ev', ''))

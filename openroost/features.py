@@ -7,7 +7,7 @@ state and start working the day a feature ships, with no app update.
 SUPPORTED, PLANNED = 'supported', 'planned'
 
 FEATURES = {
-    # ---- hub (decoded in PROTOCOL.md)
+    # ---- hub (decoded in docs/PROTOCOL.md)
     'hub.status':        (SUPPORTED, 'Live hub status: power, backup battery, Wi-Fi, cellular, climate, firmware'),
     'hub.events':        (SUPPORTED, 'Event history and raw hub messages'),
     'hub.alerts':        (SUPPORTED, 'Intrusion, fire, panic, hostage-PIN and leak alerts'),

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  // ---------- protocol vocabulary (from PROTOCOL.md) ----------
+  // ---------- protocol vocabulary (from docs/PROTOCOL.md) ----------
   const TYPE_LABEL = { keypad: 'Keypad', door: 'Entry sensor', motion: 'Motion sensor', leak: 'Water leak / temp', smoke: 'Smoke listener', unknown: 'Unrecognised device' };
   const AS_LABEL = { 0: 'Disarmed', 2: 'Armed Home', 8: 'Arming Away', 4: 'Armed Away' };
   const DA_LABEL = { ow: 'Owner PIN', gu: 'Guest PIN', ho: 'Hostage PIN' };
@@ -505,7 +505,7 @@
   const TZ = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'America/Anchorage', 'Pacific/Honolulu', 'Europe/London', 'Europe/Berlin', 'Australia/Sydney', 'UTC'];
   const SECTIONS = [
     { id: 'security', title: 'Security & PINs', icon: 'lock', status: 'planned', feature: 'hub.pins',
-      note: 'Keypad PINs, delays, chime and per-sensor alert modes went app → Roost cloud → hub on MQTT <code>/config</code>. That format <b>isn\'t cracked yet</b> (see PROTOCOL.md), so these can\'t be changed from OpenRoost. Your current keypad PINs keep working.',
+      note: 'Keypad PINs, delays, chime and per-sensor alert modes went app → Roost cloud → hub on MQTT <code>/config</code>. That format <b>isn\'t cracked yet</b> (see docs/PROTOCOL.md), so these can\'t be changed from OpenRoost. Your current keypad PINs keep working.',
       groups: [
         { title: 'PIN codes', fields: [{ type: 'custom', render: 'pins' }] },
         { title: 'Delays & chime', planned: 'hub.delays', fields: [
@@ -1067,7 +1067,7 @@
     about(el) {
       el.innerHTML = `<dl class="kv"><div><dt>OpenRoost360</dt><dd>${esc(S.version || '—')}</dd></div><div><dt>API</dt><dd><a href="/api/v1/openapi.json">/api/v1/openapi.json</a></dd></div>
         <div><dt>HTTPS certificate</dt><dd class="sd-mono" style="font-size:11px;word-break:break-all">${esc(S.tlsFingerprint || (location.protocol === 'https:' ? 'set by your reverse proxy' : 'HTTPS is off'))}</dd></div>
-        <div><dt>Protocol notes</dt><dd>PROTOCOL.md</dd></div></dl>
+        <div><dt>Protocol notes</dt><dd>docs/PROTOCOL.md</dd></div></dl>
         <div class="f-help">The mobile app shows this fingerprint the first time it connects; check they match. Not affiliated with Roost.</div>
         ${isOwner() ? '<div data-rot></div>' : ''}`;
       const box = el.querySelector('[data-rot]'); if (!box) return;

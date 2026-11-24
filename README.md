@@ -7,7 +7,7 @@ keypad and sensors still work, but the hub only talks to that cloud, so nobody h
 OpenRoost360 is a small server you run at home that answers the hub in the cloud's place. Your kit comes back to
 life on your own network: live status, alarms and notifications, a web dashboard, and an API for a phone app.
 
-Not affiliated with Roost. Built from the protocol notes in [PROTOCOL.md](PROTOCOL.md).
+Not affiliated with Roost. Built from the protocol notes in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## How it works
 
@@ -84,7 +84,7 @@ the roadmap
 | **Research** | Live protocol log of everything the hub sends and receives | ✅ | Below |
 
 Every planned hub feature waits on one thing: the format the cloud used to send commands and settings **to** the hub.
-Everything the hub reports is already understood (see [PROTOCOL.md](PROTOCOL.md)).
+Everything the hub reports is already understood (see [docs/PROTOCOL.md](docs/PROTOCOL.md)).
 
 ### Protocol log (for reverse-engineering)
 
@@ -101,7 +101,7 @@ It contains your hub's ID, SIM number and Wi-Fi name: redact before sharing.
 
 ## Install
 
-See **[INSTALL.md](INSTALL.md)**. In short:
+See **[docs/INSTALL.md](docs/INSTALL.md)**. In short:
 
 ```bash
 git clone https://git.tysstech.com/TySS-Dev/OpenRoost360.git && cd OpenRoost360
@@ -115,7 +115,7 @@ Then open `https://<server>:8443/` and follow the setup wizard.
 ## Updates
 
 Releases are git tags `vX.Y.Z`. The server checks for new ones twice a day and shows owners **Update available**;
-`./update.sh` installs the newest release. Details in [INSTALL.md](INSTALL.md#updating).
+`./update.sh` installs the newest release. Details in [docs/INSTALL.md](docs/INSTALL.md#updating).
 
 ## API and the phone app
 
@@ -140,10 +140,11 @@ server-sent events. See **[docs/API.md](docs/API.md)**; the full route list is a
 | `openroost/` | The server: listener, hub engine, notifications, services, accounts, storage, API |
 | `web/` | Dashboard and setup wizard |
 | `tests/` | Security and alert-path tests, plus test-only stand-ins for the hub, Pi-hole, a mail server and Matrix |
+| `docs/INSTALL.md` | Installation and setup guide |
 | `docs/API.md` | API guide for the phone app |
+| `docs/PROTOCOL.md` | Everything known about the hub's protocol |
 | `Dockerfile`, `compose.yaml`, `.env.example`, `update.sh` | Docker install and updates |
 | `run.sh` | Run without Docker |
-| `PROTOCOL.md` | Everything known about the hub's protocol |
 | `roost_listen.py`, `roostfiles-certs/` | Protocol research tool and archived cloud files (not used by the app) |
 
 ## Development

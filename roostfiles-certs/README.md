@@ -1,7 +1,7 @@
 # roostfiles-certs
 
 Copies of the two public bundles from `roostfiles.s3.amazonaws.com` (fetched 2026-11-22).
-Format is documented in `PROTOCOL.md` → "Cert/endpoint bundle".
+Format is documented in `docs/PROTOCOL.md` → "Cert/endpoint bundle".
 
 | File | Bundle version | `url.txt` (MQTT broker) | MD5 (= S3 ETag) |
 |---|---|---|---|
