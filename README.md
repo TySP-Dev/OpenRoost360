@@ -1,3 +1,10 @@
+<div align="center">
+
+[![Main Repo](https://img.shields.io/badge/Main%20Repo-git.tysstech.com-blue?logo=gitea)](https://git.tysstech.com/TySS-Dev/OpenRoost360)
+[![Mirror Repo](https://img.shields.io/badge/Mirror%20Repo-github.com-blue?logo=github)](https://github.com/TySP-Dev/OpenRoost360)
+
+</div>
+
 # OpenRoost360
 
 **Keep a Roost Security360 alarm working after Roost shut its cloud down.**
