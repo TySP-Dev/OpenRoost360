@@ -23,8 +23,7 @@ MANUAL_TYPES = ('door', 'motion', 'leak', 'smoke', 'keypad', 'unknown')
 
 def bat_pct(kind, raw):
     if raw is None: return None
-    if kind == 'hub': p = (raw - 3400) / 7.5            # hub backup cell in mV (one Li-ion cell: ~3.4 V empty, ~4.15 V full)
-    else: p = (raw - 2400) / 6 if kind == 'keypad' else (raw - 600) / 4.1
+    p = (raw - 2400) / 6 if kind == 'keypad' else (raw - 600) / 4.1
     return max(0, min(100, round(p)))
 
 
@@ -463,13 +462,13 @@ class Hub:
 
     def hub_view(self):
         s, sess = self.status, self.session
-        st = self.settings(); pct = bat_pct('hub', s.get('bat'))
+        st = self.settings()
         return {
             'id': s.get('id'), 'claimed': (self.claim() or {}).get('id'), 'online': self.is_online(), 'connected': bool(sess),
             'name': st.get('hubName') or 'SmartBase', 'location': st.get('hubLoc') or '',
             'connectedSince': sess and sess['since'], 'lastSeen': s.get('lastSeen'), 'ip': s.get('ip'),
             'power': None if s.get('pw') is None else ('mains' if s.get('pw') == 1 else 'battery'),
-            'backupBatteryMv': s.get('bat'), 'backupBatteryPct': pct, 'backupBatteryLow': pct is not None and pct <= low_limit(st),
+            'backupBatteryMv': s.get('bat'),          # no percentage: the pack's voltage range isn't known yet (seen: ~5.3 V on mains)
             'connection': {'w': 'wifi'}.get(s.get('co'), s.get('co')),
             'wifi': {'ssid': s.get('ss'), 'channel': s.get('wc'), 'rssi': s.get('rs')} if s.get('ss') is not None else None,
             'cellular': None if s.get('cs') is None else {'signal': None if s.get('cs') == 99 else s.get('cs')},

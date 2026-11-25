@@ -104,7 +104,7 @@
   function toHub(h) {
     return { ...h, pw: h.power === 'mains' ? 1 : h.power === 'battery' ? 0 : null, bat: h.backupBatteryMv, ss: h.wifi?.ssid, wc: h.wifi?.channel, rs: h.wifi?.rssi,
       cs: h.cellular ? (h.cellular.signal ?? 99) : null, temp: h.climate?.tempC, hum: h.climate?.humidity, since: h.connectedSince ? h.connectedSince * 1000 : null,
-      lastSeen: h.lastSeen ? h.lastSeen * 1000 : null, batPct: h.backupBatteryPct, batLow: h.backupBatteryLow, bfw: h.firmware?.hub, wfw: h.firmware?.wifi, sfw: h.firmware?.radio, cfw: h.firmware?.modem, hw: h.firmware?.hardware, cv: h.firmware?.certBundle };
+      lastSeen: h.lastSeen ? h.lastSeen * 1000 : null, bfw: h.firmware?.hub, wfw: h.firmware?.wifi, sfw: h.firmware?.radio, cfw: h.firmware?.modem, hw: h.firmware?.hardware, cv: h.firmware?.certBundle };
   }
   function applyArm(a) {
     S.as = a.state ?? null;
@@ -946,7 +946,7 @@
         if (!h.id) { setHTML(el, '<div class="f-help">No hub has connected yet.</div>'); return; }
         const rows = [['Status', h.online ? (h.since ? `Online · connected ${uptime()}` : `Online · last heard ${ago(h.lastSeen)}`) : `Offline · last seen ${ago(h.lastSeen)}`, ''], ['Device id', 'z••••••••' + h.id.slice(-4), 'id'], ['Address', h.ip || '—', ''],
           ['Claimed', h.claimed ? (h.claimed === h.id ? 'Yes — other devices are refused' : 'A different hub is claimed') : 'Not yet', ''], ['Power', h.pw == null ? '—' : h.pw ? 'Mains' : 'Battery (events wait until it reconnects)', 'pw'],
-          ['Backup battery', h.bat != null ? `about ${h.batPct}% (${h.bat} mV)` : '—', 'bat'], ['Wi-Fi', h.ss != null ? `${h.ss} · ch ${h.wc} · ${h.rs} dBm` : '—', 'ss/wc/rs'], ['Cellular', h.cs == null ? '—' : h.cs === 99 ? 'No signal / no plan' : h.cs, 'cs'],
+          ['Backup battery', h.bat != null ? `${(h.bat / 1000).toFixed(2)} V (${h.bat} mV)` : '—', 'bat'], ['Wi-Fi', h.ss != null ? `${h.ss} · ch ${h.wc} · ${h.rs} dBm` : '—', 'ss/wc/rs'], ['Cellular', h.cs == null ? '—' : h.cs === 99 ? 'No signal / no plan' : h.cs, 'cs'],
           ['Climate', h.temp != null ? `${temp(h.temp)} · ${h.hum}%` : '—', 'cl'], ['Hub firmware', h.bfw || '—', 'bfw'], ['Wi-Fi module', h.wfw || '—', 'wfw'], ['Sub-GHz radio', h.sfw || '—', 'sfw'],
           ['LTE modem', h.cfw || '—', 'cfw'], ['Hardware', h.hw || '—', 'hw'], ['Cert bundle', h.cv || '—', 'cv']];
         if (!setHTML(el, `<dl class="kv">${rows.map(([k, v, c]) => `<div><dt>${k}${c ? ` <code class="code">${c}</code>` : ''}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
@@ -1414,10 +1414,11 @@
   function devCard(s, opts = {}) {
     const p = batPct(s), low = isLow(s), miss = isMissing(s), wait = !!s.waiting;
     const cls = miss ? 'missing' : wait ? 'waiting' : s.state === 'wet' ? 'crit' : isAlertState(s) ? 'hot' : '';
+    // temperature sensors: the reading takes the signal's place (signal is in the details)
+    const climate = s.temp != null ? `<span title="Temperature${s.hum != null ? ' · humidity' : ''}">${icon('thermo')}${temp(s.temp).replace(/(°)[FC]$/, '$1')}${s.hum != null ? ' ' + Math.round(s.hum) + '%' : ''}</span>` : '';
     const meta = miss ? `<span>Last heard ${ago(s.last)}</span>` : wait ? '<span>Added by hand · not heard from yet</span>'
-      : `<span class="batt ${low ? 'low' : ''}">${icon('battery')} ${s.pct == null ? '—' : p + '%'}</span><span>${icon('wifi')} ${['—', 'weak', 'fair', 'good', 'great'][bars(s.rs)]}</span>`;
-    const climate = s.temp != null ? ` · ${temp(s.temp)}${s.hum != null ? ' · ' + Math.round(s.hum) + '%' : ''}` : '';
-    const state = miss ? 'Missing' : wait ? 'Waiting' : sensorState(s) + climate;
+      : `<span class="batt ${low ? 'low' : ''}">${icon('battery')} ${s.pct == null ? '—' : p + '%'}</span>${climate || `<span>${icon('wifi')} ${['—', 'weak', 'fair', 'good', 'great'][bars(s.rs)]}</span>`}`;
+    const state = miss ? 'Missing' : wait ? 'Waiting' : sensorState(s);
     const act = opts.manage ? `<div class="dev-act"><button type="button" class="btn btn-sm dev-edit" data-edit="${s.id}" aria-label="${isOwner() ? 'Edit' : 'Details for'} ${esc(s.name)}">${icon(isOwner() ? 'edit' : 'eye')} ${isOwner() ? 'Edit' : 'Details'}</button>${isOwner() ? `<button type="button" class="btn btn-sm btn-icon${miss ? ' dev-rm-strong' : ' dev-rm'}" data-rm="${s.id}" title="Remove ${esc(s.name)}" aria-label="Remove ${esc(s.name)}">${icon('trash')}</button>` : ''}</div>` : '';
     return `<div class="dev ${cls}${s.named ? '' : ' unnamed'}"><div class="top"><span class="ico">${icon(TYPE_ICON[s.type] || 'chip')}</span><span class="state" title="${esc(state)}">${esc(state)}</span></div>
       <div class="name" title="${esc(s.name)}">${esc(s.name)}</div><div class="room">${esc(s.room || s.typeLabel)}</div>
@@ -1431,8 +1432,8 @@
     const off = !h.online, onBat = h.pw === 0;
     const cls = off ? 'missing' : onBat ? 'hot' : '';
     const state = off ? 'Offline' : onBat ? 'On battery' : 'Plugged in';
-    const bat = h.batPct != null ? `<span class="batt ${h.batLow ? 'low' : ''}" title="Backup battery ${h.bat} mV">${icon('battery')} ${h.batPct}%</span>` : '';
-    const meta = off ? `<span>Last heard ${ago(h.lastSeen)}</span>` : `<span>${icon('power')} ${hubPower(h)}</span>${bat}`;
+    // the backup pack's voltage range isn't known yet (one hub reports ~5.3 V), so show volts, not a guessed percentage
+    const meta = off ? `<span>Last heard ${ago(h.lastSeen)}</span>` : h.bat != null ? `<span title="Backup battery">${icon('battery')} Backup ${(h.bat / 1000).toFixed(2)} V</span>` : '<span>No battery reading yet</span>';
     const act = opts.manage ? `<div class="dev-act"><button type="button" class="btn btn-sm dev-edit" data-hubedit aria-label="${isOwner() ? 'Edit' : 'Details for'} the hub">${icon(isOwner() ? 'edit' : 'eye')} ${isOwner() ? 'Edit' : 'Details'}</button></div>` : '';
     return `<div class="dev dev-hub ${cls}"><div class="top"><span class="ico">${icon('server')}</span><span class="state">${esc(state)}</span></div>
       <div class="name" title="${esc(h.name || 'SmartBase')}">${esc(h.name || 'SmartBase')}</div><div class="room">${esc(h.location || 'Hub')}</div>
@@ -1452,7 +1453,7 @@
       <dl class="kv">
         ${row('Status', h.online ? `<span class="sd-pill">Online</span>` : `<span class="sd-pill warn">Offline</span> · last seen ${ago(h.lastSeen)}`)}
         ${row('Power', esc(hubPower(h)), 'pw')}
-        ${row('Backup battery', h.batPct != null ? `about ${h.batPct}% <span class="sd-raw">(${h.bat} mV)</span>` : '—', 'bat')}
+        ${row('Backup battery', h.bat != null ? `${(h.bat / 1000).toFixed(2)} V <span class="sd-raw">(${h.bat} mV)</span>` : '—', 'bat')}
         ${row('Wi-Fi', h.ss != null ? `${esc(h.ss)} · ${h.rs} dBm` : '—', 'ss/rs')}
         ${row('Temperature / humidity', h.temp != null ? `${temp(h.temp)} · ${h.hum ?? '—'}%` : '—', 'cl')}
         ${row('Address', esc(h.ip || '—'))}

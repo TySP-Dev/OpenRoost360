@@ -37,7 +37,7 @@ def main():
     a = fakehub.FakeHub(s.lport); a.subscribe(); a.publish(fakehub.status(pw=1))
     h = wait_for(lambda: hub()['online'] and hub())
     check('hub online after connecting', h and h['online'] and h['connected'], h)
-    check('power and backup battery reported', h['power'] == 'mains' and h['backupBatteryPct'] == 92, h)
+    check('power and backup battery reported', h['power'] == 'mains' and h['backupBatteryMv'] == 4087, h)
     check('hub has a default name', h['name'] == 'SmartBase', h)
 
     b = fakehub.FakeHub(s.lport); b.subscribe()                # the hub reconnects before its old connection timed out

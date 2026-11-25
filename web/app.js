@@ -25,10 +25,10 @@ const pages = {
       const st = U.stateInfo();
       H('#hero', `${U.ringHTML(st)}<div><h2>${esc(st.title)}</h2><p>${esc(st.sub)}</p>${U.modesHTML()}${U.previewNote()}</div>`);
       H('#rooms', U.hubCard() + ([...S.sensors].sort((a, b) => U.isMissing(b) - U.isMissing(a)).map(s => U.devCard(s)).join('') || (S.hub.id ? '' : '<div class="empty">No sensors yet. They appear as the hub reports them.</div>')));
-      const low = S.sensors.filter(U.isLow).length + (S.hub.batLow ? 1 : 0);
+      const low = S.sensors.filter(U.isLow).length;
       const leaks = S.sensors.filter(s => s.temp != null && !U.isMissing(s));
       const where = leaks.length ? `At the hub · sensors ${leaks.map(s => F.temp(s.temp)).join(', ')}` : 'At the hub';
-      H('#stat', `<div title="${esc(where)}"><b>${F.temp(S.hub.temp)}</b><span>Temperature · hub</span></div><div><b>${S.hub.hum != null ? Math.round(S.hub.hum) + '%' : '—'}</b><span>Humidity · hub</span></div><div><b style="color:${low ? 'var(--warn)' : 'inherit'}">${low}</b><span>Low batteries</span></div>`);
+      H('#stat', `<div title="${esc(where)}"><b>${F.temp(S.hub.temp)}</b><span>Hub temp</span></div><div><b>${S.hub.hum != null ? Math.round(S.hub.hum) + '%' : '—'}</b><span>Hub humidity</span></div><div><b style="color:${low ? 'var(--warn)' : 'inherit'}">${low}</b><span>Low batteries</span></div>`);
       H('#health', U.healthHTML());
       H('#tl', U.timeline(S.events.slice(0, 8)));
     });
