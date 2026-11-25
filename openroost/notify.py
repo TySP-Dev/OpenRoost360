@@ -244,11 +244,46 @@ class Notifier:
         if not hs or not tok: raise NotifyError('Set the homeserver and sign the bot in first.')
         return hs, {'Authorization': 'Bearer ' + tok}
 
+    ROOMS_FILTER = json.dumps({'presence': {'not_types': ['*']}, 'account_data': {'not_types': ['*']},
+                               'room': {'timeline': {'limit': 0}, 'ephemeral': {'not_types': ['*']}, 'account_data': {'not_types': ['*']},
+                                        'state': {'types': ['m.room.name', 'm.room.canonical_alias', 'm.room.encryption', 'm.room.member'], 'lazy_load_members': True}}},
+                              separators=(',', ':'))
+
+    def mx_rooms(self, st=None, hs=None, tok=None):
+        """The rooms the bot is in or invited to: [{id, name, alias, encrypted, invited}]. One filtered /sync."""
+        if hs is None: hs, h = self._mx(st or self.store.get_settings())
+        else: h = {'Authorization': 'Bearer ' + tok}
+        me = (st or self.store.get_settings()).get('mxUser') or ''
+        _, r = _http('GET', f'{hs}/_matrix/client/v3/sync?' + urllib.parse.urlencode({'filter': self.ROOMS_FILTER, 'timeout': '0'}), headers=h)
+        out = []
+        for kind, key in (('join', 'state'), ('invite', 'invite_state')):
+            for rid, room in ((r.get('rooms') or {}).get(kind) or {}).items():
+                ev = (room.get(key) or {}).get('events', [])
+                get = lambda t: next((e.get('content') or {} for e in ev if e.get('type') == t), {})
+                name, alias = get('m.room.name').get('name'), get('m.room.canonical_alias').get('alias')
+                if not name:                                    # unnamed (e.g. a DM): name it after the other people
+                    others = [e.get('content', {}).get('displayname') or e.get('state_key') for e in ev
+                              if e.get('type') == 'm.room.member' and e.get('state_key') != me and (e.get('content') or {}).get('membership') in ('join', 'invite')]
+                    name = ', '.join(o for o in others if o)[:80] or None
+                out.append({'id': rid, 'name': name or alias or rid, 'alias': alias, 'encrypted': bool(get('m.room.encryption')), 'invited': kind == 'invite'})
+        return sorted(out, key=lambda x: (x['invited'], (x['name'] or '').lower()))
+
     def mx_room_id(self, st, hs, h, join=True):
         room = (st.get('mxRoom') or '').strip()
         if not room: raise NotifyError('No Matrix room set.')
         if room.startswith('#'):
-            _, r = _http('GET', f'{hs}/_matrix/client/v3/directory/room/{urllib.parse.quote(room)}', headers=h); room = r['room_id']
+            code, r = mxcrypto.req('GET', f'{hs}/_matrix/client/v3/directory/room/{urllib.parse.quote(room)}', None, h)
+            if code == 404:
+                raise NotifyError(f'No room has the address {room}. A room\'s name isn\'t an address: pick the room from the list '
+                                  '(Choose a room), or give it a published address in Element (Room settings → General).')
+            if code >= 300: raise NotifyError(f'Looking up {room} failed ({r.get("errcode", code)}: {r.get("error", "")})')
+            room = r['room_id']
+        elif not room.startswith('!'):                          # a room name: find it among the bot's rooms
+            hits = [x for x in self.mx_rooms(st, hs, h['Authorization'][7:]) if (x['name'] or '').lower() == room.lower()]
+            if len(hits) != 1:
+                raise NotifyError(f'The bot isn\'t in or invited to a room called “{room}”. Invite it first, then pick the room from the list.'
+                                  if not hits else f'The bot is in {len(hits)} rooms called “{room}”: pick one from the list.')
+            room = hits[0]['id']
         if join: self.mx_join(hs, h, room)
         return room
 

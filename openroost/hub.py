@@ -386,16 +386,35 @@ class Hub:
         return f"{TYPE_LABEL.get(s.get('type'), 'Sensor')} {sid}"
 
     def _battery(self, sid, s, name):
+        """Low battery: a history entry when a sensor first drops to the limit, a notification (if on), and a reminder
+        every few days while it stays low (Settings → Notifications → Low batteries). The flag holds when it last notified."""
         pct = bat_pct(s.get('type'), s.get('bat'))
         if pct is None: return
-        low = low_limit(self.settings())
+        st = self.settings(); low = low_limit(st)
         key = f'lowbat:{sid}'
         if pct <= low and not self.flags.get(key):
-            self._set_flag(key, True)
             self._event('system', 'warn', 'Low battery', f'{name} · about {pct}%', sid)
-            self._notify('lowbat', 'Low battery', f'{name} is at about {pct}%. Replace its battery soon.')
+            if st.get('lowBatNotify', True) is not False:
+                self._notify('lowbat', 'Low battery', f'{name} is at about {pct}%. Replace its battery soon.')
+            self._set_flag(key, time.time())
         elif pct > low + 5 and self.flags.get(key):
             self._set_flag(key, False)
+
+    def _battery_reminders(self, now):
+        st = self.settings()
+        if st.get('lowBatNotify', True) is False: return
+        try: days = float(st.get('lowBatRemindDays', 7) or 0)
+        except (TypeError, ValueError): days = 7
+        if days <= 0: return
+        low = low_limit(st)
+        for sid, s in self.sensors.items():
+            last = self.flags.get(f'lowbat:{sid}')
+            if not last or self.meta().get(str(sid), {}).get('removed'): continue
+            if last is True: self._set_flag(f'lowbat:{sid}', now); continue          # flag from before reminders existed
+            pct = bat_pct(s.get('type'), s.get('bat'))
+            if pct is not None and pct <= low and now - last >= days * 86400:
+                self._set_flag(f'lowbat:{sid}', now)
+                self._notify('lowbat', 'Battery still low', f'{self._name(sid, s)} is at about {pct}%. Replace its battery soon.')
 
     def _climate(self, key, where, tc, hum):
         st = self.settings()
@@ -441,6 +460,7 @@ class Hub:
                     self._event('system', 'warn', f'{name} is missing', f'No check-in for over {hours} h', sid)
                     self._notify('missing', 'Sensor missing', f'{name} hasn\'t checked in for over {hours} hours. Try a fresh battery.')
                     self.bus.publish('sensor', self.sensor_view(sid))
+        with self.lock: self._battery_reminders(now)
         days = int(st.get('retention') or 90)
         self.store.prune_events(days)
 

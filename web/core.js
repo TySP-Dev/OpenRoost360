@@ -518,6 +518,11 @@
     draw();
   }
 
+  // the Matrix bot's rooms, to pick the alert room by name
+  const roomListHTML = rooms => rooms.length ? `<ul class="pick-list">${rooms.map(r => `<li><button type="button" class="pick" data-keep data-room="${esc(r.id)}" data-name="${esc(r.name)}">
+      <span><b>${esc(r.name)}</b><small>${esc(r.alias || r.id)}</small></span><span class="pick-tags">${r.encrypted ? '<span class="badge badge-ok">encrypted</span>' : ''}${r.invited ? '<span class="badge">invited</span>' : ''}</span></button></li>`).join('')}</ul>`
+    : '<div class="f-help">The bot isn\'t in any room yet. Invite it to the alert room in Element, then try again.</div>';
+
   // ---------- settings ----------
   const TZ = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'America/Anchorage', 'Pacific/Honolulu', 'Europe/London', 'Europe/Berlin', 'Australia/Sydney', 'UTC'];
   const SECTIONS = [
@@ -549,18 +554,23 @@
           { k: 'mxHs', label: 'Homeserver URL', type: 'url', ph: 'https://matrix.example.org', def: '' },
           { k: 'mxUser', label: 'Bot account', type: 'text', ph: '@openroost:example.org', def: '', help: 'A dedicated account for OpenRoost. Invite it to the alert room.' },
           { type: 'custom', render: 'mxlogin' },
-          { k: 'mxRoom', label: 'Household alert room', type: 'text', ph: '#home-alerts:example.org', def: '', help: 'Room ID (<code>!abc:server</code>) or alias (<code>#room:server</code>). Encrypted rooms work: OpenRoost notices and encrypts its messages.' },
+          { k: 'mxRoom', label: 'Household alert room', type: 'text', ph: '!abc…:example.org', def: '', help: 'Easiest: <b>Choose a room</b> below (invite the bot first). Also takes a room ID (<code>!abc:server</code>), a published address (<code>#room:server</code>) or the room\'s exact name. Encrypted rooms work.' },
+          { type: 'custom', render: 'mxroompick' },
           { k: 'mxMention', label: '@room on alarms', type: 'toggle', def: true },
           { k: 'mxE2ee', label: 'Encrypt direct messages', type: 'toggle', def: true, help: 'New DMs to emergency contacts are created end-to-end encrypted. Rooms you choose are encrypted or not by their own setting.' },
           { type: 'custom', render: 'mxe2ee' } ],
           actions: [{ label: 'Send test message', act: 'matrixTest' }] },
         { title: 'Family & emergency contacts', fields: [{ type: 'custom', render: 'contacts' }] },
         { title: 'Emergency countdown', fields: [{ type: 'custom', render: 'escalation' }] },
+        { title: 'Low batteries', fields: [
+          { k: 'lowBat', label: 'Counts as low at', type: 'range', min: 5, max: 50, step: 5, unit: '%', def: 35, help: 'A sensor battery at or below this is low: it\'s counted under Low batteries on Home and marked on its card.' },
+          { k: 'lowBatNotify', label: 'Notify me about low batteries', type: 'toggle', def: true, help: 'Once when a battery gets low. Which channels it goes to: <i>Low battery</i> in “What goes where” below. History always records it.' },
+          { k: 'lowBatRemindDays', label: 'Remind me while it stays low', type: 'select', opts: [['0', 'No reminders'], ['1', 'Every day'], ['3', 'Every 3 days'], ['7', 'Every week'], ['14', 'Every 2 weeks'], ['30', 'Every month']], def: 7, num: true },
+          { type: 'custom', render: 'lowbatnow' } ] },
         { title: 'What goes where', fields: [{ type: 'custom', render: 'matrix' }] },
         { title: 'Behaviour', fields: [
           { k: 'duressSilent', label: 'Silent duress', type: 'toggle', def: true, help: 'Hostage-PIN disarms alert your contacts but never show on screens inside the home.' },
           { k: 'repeatMin', label: 'Repeat alarm notifications', type: 'number', min: 0, max: 60, unit: 'min', def: 5, help: 'Re-send until someone acknowledges. 0 = once.' },
-          { k: 'lowBat', label: 'Low-battery warning', type: 'range', min: 5, max: 50, step: 5, unit: '%', def: 35, help: 'A battery at or below this counts as low (Home → Low batteries) and you get a warning.' },
           { k: 'offlineMin', label: 'Hub offline alert after', type: 'number', min: 1, max: 120, unit: 'min', def: 10 },
           { k: 'sensorMissingH', label: 'Mark a sensor missing after', type: 'number', min: 2, max: 168, unit: 'h', def: 24, help: 'Sensors check in on their own. One that stays quiet this long is shown as Missing.' },
           { k: 'quiet', label: 'Quiet hours for non-urgent events', type: 'text', def: '22:00–07:00', help: 'Alarms, fire, panic, leak and duress ignore quiet hours. Uses the time zone under Appearance.' } ] },
@@ -715,7 +725,7 @@
       case 'textarea':
         c = `<textarea class="in" id="${id}" rows="3" data-k="${f.k}" placeholder="${esc(f.ph || '')}">${esc(v)}</textarea>`; break;
       case 'select':
-        c = `<select class="in" id="${id}" data-k="${f.k}">${f.opts.map(([val, l]) => `<option value="${val}"${val == v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
+        c = `<select class="in" id="${id}" data-k="${f.k}"${f.num ? ' data-num' : ''}>${f.opts.map(([val, l]) => `<option value="${val}"${val == v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
       case 'toggle':
         c = `<label class="sw"><input type="checkbox" id="${id}" data-k="${f.k}"${v ? ' checked' : ''}><span class="sw-t" aria-hidden="true"></span><span class="sr">${esc(f.label)}</span></label>`; break;
       case 'range':
@@ -758,7 +768,7 @@
         if (i.closest('[data-planned]')) return;
         if (i.type === 'radio') { if (i.checked) S.settings[i.dataset.k] = i.value; }
         else if (i.type === 'checkbox') S.settings[i.dataset.k] = i.checked;
-        else if (i.type === 'number' || i.type === 'range') S.settings[i.dataset.k] = Number(i.value);
+        else if (i.type === 'number' || i.type === 'range' || 'num' in i.dataset) S.settings[i.dataset.k] = Number(i.value);
         else S.settings[i.dataset.k] = i.value;
       });
       el.querySelectorAll('[data-mx]').forEach(i => { const [r, c] = i.dataset.mx.split(':'); (S.settings.routing[r] ||= [0, 0, 0, 0])[+c] = i.checked ? 1 : 0; });
@@ -814,6 +824,30 @@
           document.querySelectorAll('[data-mxe2ee]').forEach(x => CUSTOM.mxe2ee(x));
         } catch (err) { toast(esc(err.message), 'err', 6000); }
       });
+    },
+    lowbatnow(el) {
+      mount(el, () => {
+        const limit = +(document.querySelector('[data-k="lowBat"]')?.value || lowLimit());
+        const list = S.sensors.filter(x => x.pct != null && x.pct <= limit).sort((a, b) => a.pct - b.pct);
+        setHTML(el, `<div class="f-help" style="margin-top:4px">${list.length ? `Low right now at ${limit}%: ` + list.map(x => `<b>${esc(x.name)}</b> ${x.pct}%`).join(', ') : `No sensor battery is at or below ${limit}% right now.`}</div>`);
+      });
+      document.querySelector('[data-k="lowBat"]')?.addEventListener('input', () => emit());
+    },
+    mxroompick(el) {
+      el.innerHTML = `<div class="group-actions" style="margin-top:0"><button type="button" class="btn btn-sm" data-keep data-pick>${icon('list')} Choose a room</button></div><div data-rooms></div>`;
+      el.querySelector('[data-pick]').addEventListener('click', e => busy(e.currentTarget, async () => {
+        const box = el.querySelector('[data-rooms]');
+        try {
+          const rooms = (await api('GET', '/notify/matrix/rooms')).rooms;
+          box.innerHTML = roomListHTML(rooms);
+          box.querySelectorAll('[data-room]').forEach(b => b.addEventListener('click', () => {
+            const sec = el.closest('#set') || document, input = sec.querySelector('[data-k="mxRoom"]');
+            input.value = b.dataset.room; input.dispatchEvent(new Event('input', { bubbles: true }));
+            box.querySelectorAll('[data-room]').forEach(x => x.classList.toggle('on', x === b));
+            toast(`Chosen: ${esc(b.dataset.name)}. Press Save to keep it.`, 'info');
+          }));
+        } catch (err) { box.innerHTML = `<div class="f-help err-t">${esc(err.message)}</div>`; }
+      }));
     },
     mxe2ee(el) {
       el.dataset.mxe2ee = '1';
@@ -1389,15 +1423,14 @@
   function stateInfo() {
     const alarm = S.alerts.find(a => a.active && ['intrusion', 'panic', 'fire'].includes(a.kind)), c = S.countdown, rem = remaining();
     const live = S.sensors, gone = live.filter(isMissing).length, on = live.length - gone;
-    const climate = S.hub.temp != null ? ` · ${temp(S.hub.temp)} and ${Math.round(S.hub.hum)}% humidity at the hub` : '';
     if (alarm) return { key: 'alarm', cls: 's-alarm', lbl: 'Alarm', hint: 'Disarm at the keypad', title: alarm.title, sub: alarm.detail, p: 100 };
     if (c) return { key: c.kind, cls: 's-pending', lbl: `${rem}s`, hint: c.kind === 'exit' ? 'Arming Away' : 'Entry delay', title: c.kind === 'exit' ? 'Time to head out' : 'Someone came in', sub: c.kind === 'exit' ? 'The system arms when the countdown ends.' : 'Disarm at the keypad before the countdown ends.', p: Math.max(0, Math.min(100, rem / (c.total || 60) * 100)) };
     if (S.as == null) return { key: 'none', cls: 's-pending', lbl: 'Waiting', hint: '', title: 'Waiting for the hub', sub: 'The SmartBase hasn\'t reported its state yet.', p: 0 };
-    if (S.as === 2) return { key: 'home', cls: 's-armed', lbl: 'Home', hint: 'Armed', title: 'Armed while you\'re home', sub: `Doors are watched; motion sensors are relaxed${climate}.`, p: 100 };
-    if (S.as === 4) return { key: 'away', cls: 's-armed', lbl: 'Away', hint: 'Armed', title: 'Armed — everyone\'s out', sub: `Every sensor is watching${climate}.`, p: 100 };
+    if (S.as === 2) return { key: 'home', cls: 's-armed', lbl: 'Home', hint: 'Armed', title: 'Armed while you\'re home', sub: 'Doors are watched; motion sensors are relaxed.', p: 100 };
+    if (S.as === 4) return { key: 'away', cls: 's-armed', lbl: 'Away', hint: 'Armed', title: 'Armed — everyone\'s out', sub: 'Every sensor is watching.', p: 100 };
     const open = live.filter(s => s.state === 'open');
     return { key: 'off', cls: '', lbl: 'Disarmed', hint: '', title: open.length ? `${open.map(s => s.name).join(', ')} ${open.length > 1 ? 'are' : 'is'} open` : 'All quiet at home',
-      sub: `${on} sensor${on === 1 ? '' : 's'} connected${gone ? ` · ${gone} missing` : ''}${climate}`, p: 100 };
+      sub: `${on} sensor${on === 1 ? '' : 's'} connected${gone ? ` · ${gone} missing` : ''}`, p: 100 };
   }
   const ringHTML = st => `<div class="ring ${st.cls}" role="img" aria-label="${esc(st.hint ? `${st.lbl} — ${st.hint}` : st.lbl)}"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="ring-trk" cx="50" cy="50" r="45"/><circle class="ring-arc" cx="50" cy="50" r="45" pathLength="100" stroke-dasharray="${st.p.toFixed(2)} 100" transform="rotate(-90 50 50)"/></svg><span class="ring-in"><span class="lbl">${st.lbl}</span>${st.hint ? `<span class="hint">${st.hint}</span>` : ''}</span></div>`;
   function modesHTML() {
@@ -1559,6 +1592,7 @@
     ui: { isMissing, isLow, health, healthHTML, stateInfo, ringHTML, modesHTML, previewNote, bindHome, devCard, hubCard, timeline, alertsHTML, ACTIVITY_SETS, startRouter },
     S, on, mount, emit, icon, esc, removeSensor, confirmRemoveSensor, sensorDetails, renameSensor, hubDetails, addSensorDialog, setHTML,
     SECTIONS, renderSettings, renderPairing, toast, badge, roomCombo, createRoom, applyLook, persist,
+    roomListHTML,
     svc: { PH_OPTS, MAIL_OPTS, choiceCards, renderPiholeSetup, renderMailSetup, piholeReady, piholeWhy, mailWhy, mailTarget, piholeSummary, mailSummary, phHostOf, newPihole, newMail },
     TYPE_LABEL, TYPE_ICON, KIND_ICON, AS_LABEL, DA_LABEL,
     fmt: { time: fmtTime, date: fmtDate, ago, batPct, bars, temp, remaining, sensorState, isAlertState, uptime },

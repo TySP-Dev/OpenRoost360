@@ -150,6 +150,28 @@ def main():
     except NotifyError as e: red = str(e)
     check('a redirected POST is refused with a clear message (not silently turned into a GET)', 'redirects to' in red, red)
 
+    print('\n== Low-battery notifications and reminders')
+    import tempfile
+    from openroost.store import Store
+    from openroost.bus import Bus
+    from openroost.hub import Hub
+    class N:
+        sent = []
+        def dispatch(self, kind, title, detail, sev='info'): N.sent.append((kind, title))
+    st_ = Store(tempfile.mkdtemp()); hb = Hub(st_, Bus(), N())
+    low = lambda sid, bat: hb.on_publish('t', json.dumps(fakehub.sensor(sid, 'door', 0, bat=bat)).encode())
+    st_.save_settings({'lowBat': 35, 'lowBatNotify': True, 'lowBatRemindDays': 7})
+    low(1, 700)                                                # 24 %
+    check('a battery dropping to the limit notifies once', [t for k, t in N.sent if k == 'lowbat'] == ['Low battery'], N.sent)
+    low(1, 700); hb.tick()
+    check('…not again on the next report or tick', len([1 for k, _ in N.sent if k == 'lowbat']) == 1, N.sent)
+    hb._set_flag('lowbat:1', time.time() - 8 * 86400); hb.tick()
+    check('a reminder goes out after the reminder interval', N.sent[-1] == ('lowbat', 'Battery still low'), N.sent)
+    st_.save_settings({'lowBatRemindDays': 0}); hb._set_flag('lowbat:1', time.time() - 99 * 86400); n = len(N.sent); hb.tick()
+    check('no reminders when they\'re off', len(N.sent) == n)
+    st_.save_settings({'lowBatNotify': False}); low(2, 700)
+    check('with notifications off, a low battery is only recorded in history', len(N.sent) == n and any(e['title'] == 'Low battery' and e['sensor'] == 2 for e in st_.events(20)))
+
     print('\n== DNS for OpenRoost itself (OPENROOST_DNS)')
     import socket, struct
     from openroost import resolver

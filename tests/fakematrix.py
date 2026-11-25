@@ -10,6 +10,7 @@ BOT, BOT_PW, BOT_TOKEN = '@openroost:test.local', 'bot-password', 'syt_test_toke
 SENT, TODEVICE, ROOMS, ENCRYPTED = [], [], {'#alerts:test.local': '!alerts:test.local'}, set()
 MEMBERS = {'!alerts:test.local': {'@ty:test.local'}}
 INVITES = {'!alerts:test.local': {BOT}}          # the bot is invited to the alert room and has to join it
+NAMES = {'!alerts:test.local': 'Home Alerts'}    # room names, sent as state on the first /sync
 TIMELINE, INBOX = [], []                         # room events (room, event) and to-device messages for the bot (device, event)
 DEVICE_KEYS, OTKS, XSIGN, SIG_UPLOADS, LOGINS, FALLBACK, REPLENISHED = {}, {}, {}, [], [], {}, []
 TOKENS = {BOT_TOKEN: BOT}
@@ -134,8 +135,12 @@ def run(port):
                 join = {}
                 for room, ev in tl[t0:] if since else []:
                     if u in MEMBERS.get(room, set()): join.setdefault(room, {'timeline': {'events': []}})['timeline']['events'].append(ev)
+                name_ev = lambda r: [{'type': 'm.room.name', 'state_key': '', 'content': {'name': NAMES[r]}}] if r in NAMES else []
+                if not since:                                  # the first sync carries each joined room's state
+                    for room, ms in MEMBERS.items():
+                        if u in ms: join.setdefault(room, {})['state'] = {'events': name_ev(room) + [{'type': 'm.room.member', 'state_key': m, 'content': {'membership': 'join'}} for m in sorted(ms)]}
                 return self.reply(200, {'next_batch': f's{len(tl)}_{len(ib)}',
-                                        'rooms': {'join': join, 'invite': {r: {} for r, us in INVITES.items() if u in us}},
+                                        'rooms': {'join': join, 'invite': {r: {'invite_state': {'events': name_ev(r)}} for r, us in INVITES.items() if u in us}},
                                         'to_device': {'events': [ev for d, ev in ib[ti:] if d == device]},
                                         'device_one_time_keys_count': {'signed_curve25519': len(OTKS.get(u, {}).get(device, {}))},
                                         'device_unused_fallback_key_types': ['signed_curve25519'] if FALLBACK.get((u, device)) else []})

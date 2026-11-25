@@ -210,6 +210,12 @@ class App:
             except NotifyError as e: raise ApiError(400, str(e))
             st.save_settings({'mxToken': tok, 'mxHs': base, 'mxUser': b['user']}); h.send_json(200, {'ok': True, 'note': note, 'hs': base, 'e2ee': self.notifier.crypto.status()})
 
+        @R('POST', '/api/v1/setup/matrix-rooms', summary='Rooms the Matrix bot is in or invited to (setup)', tags=('setup',))
+        def setup_mx_rooms(h, sess):
+            self.need_setup_code(h, h.body().get('code'))
+            try: h.send_json(200, {'rooms': self.notifier.mx_rooms()})
+            except NotifyError as e: raise ApiError(400, str(e))
+
         @R('POST', '/api/v1/setup/matrix-test', summary='Send a Matrix test message during setup', tags=('setup',))
         def setup_mx_test(h, sess):
             b = h.body(); self.need_setup_code(h, b.get('code'))
@@ -673,6 +679,11 @@ class App:
             except NotifyError as e: raise ApiError(400, str(e))
             st.save_settings({'mxToken': tok, 'mxHs': base, 'mxUser': user}); st.audit(sess['user']['username'], h.ip, 'matrix.login', base)
             h.send_json(200, {'ok': True, 'note': note, 'hs': base, 'e2ee': self.notifier.crypto.status(), 'secretsSet': st.secrets_set()})
+
+        @R('GET', '/api/v1/notify/matrix/rooms', 'owner', summary='Rooms the Matrix bot is in or invited to (to pick the alert room)', tags=('notify',))
+        def mx_rooms(h, sess):
+            try: h.send_json(200, {'rooms': self.notifier.mx_rooms()})
+            except NotifyError as e: raise ApiError(400, str(e))
 
         @R('GET', '/api/v1/notify/matrix/e2ee', 'owner', summary='Matrix encryption status: device, cross-signing, its fingerprint', tags=('notify',))
         def mx_e2ee(h, sess): h.send_json(200, self.notifier.crypto.status())

@@ -51,7 +51,8 @@ class MatrixSync:
         except mxcrypto.CryptoError as e: self.log(f'matrix: topping up keys failed: {e}')
         rooms = r.get('rooms') or {}
         if rooms.get('invite'):
-            want = self.notifier.mx_room_id(st, hs, h, join=False)
+            try: want = self.notifier.mx_room_id(st, hs, h, join=False)
+            except Exception: want = None                     # room not set or not found: join nothing
             for rid in rooms['invite']:
                 if rid == want:
                     try: self.notifier.mx_join(hs, h, rid); self.log(f'matrix: joined the alert room {rid}')

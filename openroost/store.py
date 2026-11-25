@@ -187,7 +187,7 @@ SCHEMA = {
     'entryDelay': N(0, 300), 'exitDelay': N(0, 300), 'doorChime': B, 'alarmSound': B, 'duressSilent': B,
     # notifications
     'mail': obj(MAIL), 'smtpTo': V.emails, 'smtpSubject': S(200), 'repeatMin': N(0, 60), 'offlineMin': N(1, 120),
-    'sensorMissingH': N(2, 168), 'lowBat': N(5, 50), 'quiet': S(40),
+    'sensorMissingH': N(2, 168), 'lowBat': N(5, 50), 'lowBatNotify': B, 'lowBatRemindDays': N(0, 60), 'quiet': S(40),
     'mxOn': B, 'mxHs': U, 'mxUser': S(255), 'mxRoom': S(255), 'mxToken': SECRET, 'mxMention': B, 'mxE2ee': B,
     'ntfyUrl': U, 'ntfyPrio': T, 'hookUrl': U, 'hookSecret': SECRET,
     'routing': v_routing, 'contacts': v_contacts, 'esc': v_esc,

@@ -31,7 +31,7 @@ const STEPS = [
   { id: 'email', title: 'Email alerts', render: mailChoice, ok: () => !!st.mail.mode, why: 'Choose how OpenRoost should send email.' },
   { id: 'email-setup', skip: () => st.mail.mode === 'off', title: () => ({ 'relay-existing': 'Connect your mail relay', account: 'Connect your email account', 'relay-start': 'OpenRoost\'s mail relay' })[st.mail.mode] || 'Set up email',
     render: el => SV.renderMailSetup(el, st.mail, nav, { recipients: true, test: m => call('mail-test', { mail: m, site: st.site }), bundled }), ok: () => !SV.mailWhy(st.mail, true), why: () => SV.mailWhy(st.mail, true) },
-  { id: 'matrix', title: 'Matrix alerts', render: matrix, ok: () => st.mx.want === false || (st.mx.want && st.mx.signedIn && /^[#!].+:.+/.test(st.mx.room)),
+  { id: 'matrix', title: 'Matrix alerts', render: matrix, ok: () => st.mx.want === false || (st.mx.want && st.mx.signedIn && !!st.mx.room.trim()),
     why: () => st.mx.want == null ? 'Choose whether to send alerts to Matrix.' : !st.mx.signedIn ? 'Sign the bot in first.' : 'Enter the alert room.' },
   { id: 'done', title: 'You’re all set', render: done, ok: () => true },
 ];
@@ -292,14 +292,26 @@ function matrix(el) {
       <label class="su-f"><span>Bot password</span><input class="in" id="mp" type="password" value="" placeholder="${m.signedIn ? 'Signed in · type to sign in again' : ''}" autocomplete="off"></label>
       <span class="f-help su-help">Used once to get an access token; OpenRoost stores only the token (encrypted).</span>
       <div class="su-row"><button type="button" class="btn btn-sm btn-primary" data-login>${m.signedIn ? 'Sign in again' : 'Sign bot in'}</button><span data-lmsg role="status">${m.signedIn ? `<b class="ok-t">${I('check')} Signed in</b>` : ''}</span></div>${m.note ? `<div class="f-help">${esc(m.note)}</div>` : ''}
-      <label class="su-f"><span>Alert room</span><input class="in" id="mr" value="${esc(m.room)}" placeholder="#home-alerts:example.org" autocomplete="off"></label>
-      <span class="f-help su-help">Room alias (<code>#room:server</code>) or ID (<code>!abc:server</code>). Invite the bot first. Encrypted rooms work: OpenRoost detects them and encrypts its messages.</span>
+      ${m.signedIn ? `<div class="su-f"><span>Alert room</span><span><button type="button" class="btn btn-sm" data-rooms>${I('list')} Choose from the bot's rooms</button></span></div><div data-roomlist></div>` : ''}
+      <label class="su-f"><span>${m.signedIn ? 'Or enter it' : 'Alert room'}</span><input class="in" id="mr" value="${esc(m.room)}" placeholder="!abc…:example.org" autocomplete="off"></label>
+      <span class="f-help su-help">Invite the bot to the room in Element first. Room ID (<code>!abc:server</code>), published address (<code>#room:server</code>) or the room's exact name. Encrypted rooms work.</span>
       <div class="su-row"><button type="button" class="btn btn-sm" data-test${m.signedIn ? '' : ' disabled'}>${I('chip')} Send a test message</button><span data-tmsg role="status"></span></div></div>` : ''}`;
   el.querySelectorAll('[data-mx]').forEach(b => b.onclick = () => { m.want = b.dataset.mx === '1'; matrix(el); nav(); });
   if (!m.want) return;
   const g = id => el.querySelector('#' + id);
   ['hs', 'mu', 'mr'].forEach(id => g(id).oninput = () => { m.hs = g('hs').value.trim(); m.user = g('mu').value.trim(); m.room = g('mr').value.trim(); nav(); });
   g('mp').oninput = () => { m.pass = g('mp').value; };
+  el.querySelector('[data-rooms]')?.addEventListener('click', async e => {
+    const box = el.querySelector('[data-roomlist]'); e.currentTarget.disabled = true; box.innerHTML = '<div class="scan-wait"><span class="spin"></span> Asking the homeserver…</div>';
+    try {
+      box.innerHTML = M.roomListHTML((await call('matrix-rooms')).rooms);
+      box.querySelectorAll('[data-room]').forEach(b => b.onclick = () => {
+        m.room = b.dataset.room; g('mr').value = m.room;
+        box.querySelectorAll('[data-room]').forEach(x => x.classList.toggle('on', x === b)); nav();
+      });
+    } catch (err) { box.innerHTML = `<div class="f-help err-t">${esc(err.message)}</div>`; }
+    e.currentTarget.disabled = false;
+  });
   el.querySelector('[data-login]').onclick = async e => {
     const msg = el.querySelector('[data-lmsg]'); e.currentTarget.disabled = true; msg.innerHTML = '<span class="spin"></span> Signing in…';
     try {
