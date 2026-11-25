@@ -5,7 +5,7 @@ Pi-hole: the two Roost cloud names are pointed at this server with dnsmasq lines
 (Settings → All settings → Misc → misc.dnsmasq_lines: `address=/<name>/<server-ip>`), which also covers any
 sub-names. Other lines are left alone.
 """
-import json, os, random, re, shutil, socket, ssl, struct, subprocess, time, urllib.error, urllib.parse, urllib.request
+import ipaddress, json, os, random, re, shutil, socket, ssl, struct, subprocess, time, urllib.error, urllib.parse, urllib.request
 
 HOSTS = ['us-central1-mqtt.clearblade.com', 'us-central1-roostprod.cloudfunctions.net']
 
@@ -176,8 +176,7 @@ class PiHole:
         except ServiceError: pass              # Pi-hole applies dnsmasq_lines changes by itself; this just makes it immediate
 
     def dns_ip(self):
-        try: return socket.gethostbyname(self.host)
-        except OSError: return self.host
+        return _lookup4(self.host) or self.host
 
 
 def pihole_for(store, ph=None):
@@ -189,14 +188,48 @@ def pihole_for(store, ph=None):
     raise ServiceError('No Pi-hole chosen yet')
 
 
+def _lookup4(host):
+    """IPv4 address of a name, through OPENROOST_DNS when it's set (gethostbyname would bypass it)."""
+    try:
+        ipaddress.IPv4Address(host); return host
+    except ValueError: pass
+    try: return socket.getaddrinfo(host, 53, socket.AF_INET, socket.SOCK_DGRAM)[0][4][0]
+    except (OSError, IndexError): return None
+
+
+def _is_ip(x):
+    try: ipaddress.ip_address(x); return True
+    except ValueError: return False
+
+
+def _host_port(spec, default_port):
+    spec = (spec or '').strip()
+    if spec.count(':') == 1:
+        h, _, p = spec.partition(':')
+        return h, int(p) if p.isdigit() else default_port
+    return spec, default_port
+
+
 def dns_target(store, ph=None):
-    """(address, port) to ask when checking the redirect."""
+    """(address, port) of the Pi-hole's DNS server, to check the two names.
+
+    The address you open Pi-hole's web page at isn't always its DNS server: behind a reverse proxy,
+    https://pihole.example.com can resolve to your public address, where port 53 isn't open. So: the Pi-hole DNS
+    address set in Settings if there is one; else the web address's host, looked up through OPENROOST_DNS; and if that
+    is a public address, the DNS server OpenRoost itself uses (OPENROOST_DNS), which is usually that same Pi-hole."""
     ph = ph or store.get_settings().get('ph') or {}
     if ph.get('mode') == 'bundled': return server_ip(store.get_settings()), BUNDLED_PIHOLE_DNS_PORT
+    if (ph.get('dns') or '').strip():
+        h, p = _host_port(ph['dns'], DNS_PORT)
+        return _lookup4(h) or h, p
     try: host = urllib.parse.urlsplit(ph.get('url') or '').hostname or ''
     except ValueError: host = ''
-    try: return socket.gethostbyname(host), DNS_PORT
-    except OSError: return host, DNS_PORT
+    ip = _lookup4(host)
+    if ip and not ipaddress.ip_address(ip).is_private:
+        from . import resolver
+        own = resolver.info().get('servers') or []
+        if own: return _host_port(own[0], 53)
+    return ip or host, DNS_PORT
 
 
 def _ours(line):
@@ -417,7 +450,9 @@ def checks(store, hub, listener_port):
             if ip in got: add('dns:' + name, f'DNS: {name}', 'ok', f'→ {ip}')
             else: add('dns:' + name, f'DNS: {name}', 'fail', f'Resolves to {", ".join(got) or "nothing"}, not this server', 'dns')
         except ServiceError as e:
-            add('dns:' + name, f'DNS: {name}', 'fail', str(e))
+            public = _is_ip(dns_server) and not ipaddress.ip_address(dns_server).is_private
+            hint = ' · That\'s a public address: set the Pi-hole DNS address (its LAN IP) under Pi-hole, or OPENROOST_DNS in .env' if public else ''
+            add('dns:' + name, f'DNS: {name}', 'fail', str(e) + hint)
     targets = hub_targets(store, hub)
     if targets:
         res = [(ip, *nat_check(ip, listener_port)) for ip in targets]

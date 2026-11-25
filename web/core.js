@@ -354,6 +354,7 @@
     const draw = () => {
       if (cfg.mode === 'existing') {
         el.innerHTML = `${cfgField('url', 'Pi-hole address', cfg.url, 'url', 'http://192.168.1.2/admin')}
+          ${cfgField('dns', 'Pi-hole DNS address (optional)', cfg.dns, 'text', 'e.g. 192.168.1.2', 'Only if the address above isn\'t where Pi-hole answers DNS, e.g. a domain behind a reverse proxy. Its LAN IP (optionally <code>:port</code>).')}
           ${cfgField('pass', 'App password', cfg.pass, 'password', secretPh(cfg, 'ph.pass', 'From Pi-hole → Settings → Web interface / API'), 'Create an <b>app password</b> in Pi-hole under Settings → Web interface / API (expert mode). It\'s not your Pi-hole login password, and you can revoke it any time.')}
           <div class="su-row"><button type="button" class="btn btn-primary btn-sm" data-ph-test>${cfg.ok ? 'Test again' : 'Connect'}</button><span data-ph-msg role="status">${cfg.ok ? `<b class="ok-t">${icon('check')} Connected to Pi-hole ${esc(cfg.ver)}</b>` : ''}</span></div>
           <div class="note">${icon('alert')} <span>OpenRoost signs in with this app password only to read your existing DNS lines and check the result. It changes nothing in your Pi-hole.</span></div>`;

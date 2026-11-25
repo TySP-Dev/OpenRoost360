@@ -104,7 +104,7 @@ def obj(sub):
     return ('obj', sub)
 
 
-PH = {'mode': V.choice(None, 'bundled', 'existing'), 'url': V.url, 'pass': SECRET, 'ok': V.bool, 'ver': V.str(20),
+PH = {'mode': V.choice(None, 'bundled', 'existing'), 'url': V.url, 'pass': SECRET, 'ok': V.bool, 'ver': V.str(20), 'dns': V.str(60),
       'running': V.bool, 'upstream': V.choice('quad9', 'cloudflare', 'google')}
 MAIL = {'mode': V.choice(None, 'relay-existing', 'relay-start', 'account', 'off'), 'up': V.choice('resend', 'other'),
         'prov': V.choice('gmail', 'icloud', 'other'), 'host': V.str(253), 'port': V.str(5), 'sec': V.choice('', 'none', 'starttls', 'tls'),
