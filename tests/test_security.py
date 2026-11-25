@@ -341,10 +341,14 @@ def main():
 
     print('\n== HTTPS, proxies, rate limit, updates (fresh servers)')
     import ssl as _ssl, http.server as _hs, threading as _th
+    import openroost as _or
+    _maj, _min, _ = (int(x) for x in _or.__version__.split('.'))
+    NEWER, CUR = f'v{_maj}.{_min + 1}.0', f'v{_or.__version__}'
+    TAGS = {'list': [{'name': NEWER}, {'name': CUR}, {'name': 'not-a-version'}]}
     class Tags(_hs.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
         def do_GET(self):
-            b = json.dumps([{'name': 'v0.2.0'}, {'name': 'v0.1.0'}, {'name': 'not-a-version'}]).encode()
+            b = json.dumps({'name': 'main', 'commit': {'id': 'abcdef0123456789'}} if self.path.endswith('/branches/main') else TAGS['list']).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
     tags = _hs.HTTPServer(('127.0.0.1', 0), Tags); _th.Thread(target=tags.serve_forever, daemon=True).start()
     s = Server({'OPENROOST_TLS': 'on', 'OPENROOST_PROXY_IPS': '127.0.0.2', 'OPENROOST_UPDATE_URL': f'http://127.0.0.1:{tags.server_port}/tags'})
@@ -377,8 +381,14 @@ def main():
     scookie = scookie.split(';')[0].split('=', 1)[1]
     st, js, _, _ = sreq('GET', '/api/v1/version'); check('version details need sign-in', st == 401, st)
     st, js, _, _ = sreq('POST', '/api/v1/version/check', {}, cookie=scookie)
-    check('update check finds the newest release tag', st == 200 and js['latest'] == 'v0.2.0' and js['updateAvailable'] is True and js['version'] == '0.1.0', js)
-    st, js, _, _ = sreq('GET', '/api/v1/events?limit=10', cookie=scookie); check('an available update is noted in history', any('Update available: v0.2.0' in e['title'] for e in js['events']))
+    check('update check finds the newest release tag', st == 200 and js['latest'] == NEWER and js['updateAvailable'] is True and js['version'] == _or.__version__, js)
+    st, js, _, _ = sreq('GET', '/api/v1/events?limit=10', cookie=scookie); check('an available update is noted in history', any(f'Update available: {NEWER}' in e['title'] for e in js['events']))
+    sreq('POST', '/api/v1/version/check', {}, cookie=scookie)
+    st, js, _, _ = sreq('GET', '/api/v1/events?limit=20', cookie=scookie)
+    check('the same update is announced only once', sum(f'Update available: {NEWER}' in e['title'] for e in js['events']) == 1, [e['title'] for e in js['events']])
+    TAGS['list'] = []
+    st, js, _, _ = sreq('POST', '/api/v1/version/check', {}, cookie=scookie)
+    check('with no release tags yet: no error, compares with main instead', st == 200 and not js.get('error') and js.get('onMain') and js.get('mainCommit') == 'abcdef0', js)
     st, js, _, _ = sreq('GET', '/api/v1/features'); check('update checks marked supported', any(f['id'] == 'admin.updates' and f['status'] == 'supported' for f in js['features']))
     s.close(); tags.shutdown()
     s = Server()

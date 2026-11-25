@@ -17,12 +17,12 @@ class ServiceError(Exception):
 SKIP_IF = ('lo', 'docker', 'br-', 'veth', 'tun', 'tap', 'wg', 'proton', 'pvpn', 'tailscale', 'zt', 'virbr', 'cni', 'flannel')
 
 
-def interface_addresses():
-    """IPv4 address and netmask of each real network interface (skips loopback, Docker, VPN)."""
+def interface_addresses(everything=False):
+    """IPv4 address and netmask of each real network interface (skips loopback, Docker, VPN unless everything=True)."""
     import fcntl
     out = []
     for _, name in socket.if_nameindex():
-        if name.startswith(SKIP_IF): continue
+        if name.startswith(SKIP_IF) and not everything: continue
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             req = struct.pack('256s', name[:15].encode())
@@ -274,8 +274,25 @@ def nat_rule(hub_ip, port):
     return ['-t', 'nat', '{op}', 'PREROUTING', '-s', hub_ip, '-p', 'tcp', '--dport', '443', '-j', 'REDIRECT', '--to-ports', str(port)]
 
 
+_IPT = {'exe': None, 't': 0}
+
+
+def iptables():
+    """The iptables that matches the host's firewall. The image has both the nft and the legacy variant; the host may
+    use either. The one whose nat table already holds rules (Docker's own, usually) is the one the host uses."""
+    if _IPT['exe'] and time.time() - _IPT['t'] < 600: return _IPT['exe']
+    found = [x for x in (shutil.which('iptables-nft'), shutil.which('iptables-legacy')) if x]
+    pick = shutil.which('iptables')
+    for exe in found:
+        try: r = subprocess.run([exe, '-t', 'nat', '-S'], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired): continue
+        if r.returncode == 0 and len([l for l in r.stdout.splitlines() if l.startswith('-A ')]) > 0: pick = exe; break
+    _IPT.update(exe=pick, t=time.time())
+    return pick
+
+
 def nat_check(hub_ip, port):
-    exe = shutil.which('iptables')
+    exe = iptables()
     if not exe: return 'unknown', 'iptables isn\'t installed here, so the rule can\'t be checked'
     args = [exe] + [a.replace('{op}', '-C') for a in nat_rule(hub_ip, port)]
     try: r = subprocess.run(args, capture_output=True, text=True, timeout=5)
@@ -286,12 +303,70 @@ def nat_check(hub_ip, port):
 
 
 def nat_add(hub_ip, port):
-    exe = shutil.which('iptables')
+    import ipaddress
+    try: ipaddress.IPv4Address(hub_ip)
+    except ValueError: raise ServiceError(f'{hub_ip!r} isn\'t an IPv4 address') from None
+    exe = iptables()
     if not exe: raise ServiceError('iptables isn\'t installed here')
     args = [exe] + [a.replace('{op}', '-I') for a in nat_rule(hub_ip, port)]
     args.insert(args.index('PREROUTING') + 1, '1')
     r = subprocess.run(args, capture_output=True, text=True, timeout=5)
     if r.returncode: raise ServiceError(r.stderr.strip() or 'iptables failed (needs NET_ADMIN)')
+
+
+def nat_ensure(hub_ip, port):
+    """Add the redirect if it's missing. Returns 'ok' (already there), 'added', or raises ServiceError."""
+    status, detail = nat_check(hub_ip, port)
+    if status == 'ok': return 'ok'
+    if status == 'unknown': raise ServiceError(detail)
+    nat_add(hub_ip, port); return 'added'
+
+
+def hub_ips_from_env():
+    import ipaddress
+    out = []
+    for x in os.environ.get('OPENROOST_HUB_IP', '').split(','):
+        x = x.strip()
+        try: ipaddress.IPv4Address(x); out.append(x)
+        except ValueError: pass
+    return out
+
+
+def find_hub_in_pihole(store):
+    """The hub can't reach the listener before the port redirect exists, and the redirect needs the hub's address.
+    Pi-hole breaks the loop: its query log shows which device asked for the Roost cloud names. Returns the newest
+    such client address, or None."""
+    import ipaddress
+    try:
+        own = {x for _, x, _ in interface_addresses(everything=True)}
+        with pihole_for(store) as p:
+            best = None
+            for name in HOSTS:
+                try: r = p._req('GET', '/queries?' + urllib.parse.urlencode({'domain': name, 'length': 20}))
+                except ServiceError: continue
+                for q in r.get('queries') or []:
+                    ip = ((q.get('client') or {}).get('ip') or '').strip()
+                    try:
+                        a = ipaddress.ip_address(ip)
+                        if a.version != 4 or a.is_loopback: continue
+                    except ValueError: continue
+                    if ip in own: continue                                             # this server's own checks
+                    t = q.get('time') or 0
+                    if not best or t > best[0]: best = (t, ip)
+            return best and best[1]
+    except ServiceError:
+        return None
+
+
+def hub_targets(store, hub=None):
+    """Addresses that get the port 443 redirect: the claimed hub's, the one set in Settings, OPENROOST_HUB_IP, and the
+    one spotted in Pi-hole's query log. Usually all the same address."""
+    out = []
+    for ip in [((hub.claim() if hub else store.kv('claim')) or {}).get('ip'), store.get_settings().get('hubIp'), *hub_ips_from_env(),
+               (store.kv('hubSeen') or {}).get('ip')]:
+        ip = (ip or '').strip()
+        if ip and ip not in out and not ip.startswith('127.'): out.append(ip)
+    return out
 
 
 # ---------------------------------------------------------------- listener self-test
@@ -343,14 +418,22 @@ def checks(store, hub, listener_port):
             else: add('dns:' + name, f'DNS: {name}', 'fail', f'Resolves to {", ".join(got) or "nothing"}, not this server', 'dns')
         except ServiceError as e:
             add('dns:' + name, f'DNS: {name}', 'fail', str(e))
-    hub_ip = (hub.claim() or {}).get('ip') or st.get('hubIp')
-    if hub_ip:
-        status, detail = nat_check(hub_ip, listener_port)
-        add('nat', 'Port 443 → listener for the hub', status, detail, 'nat' if status == 'fail' else None)
+    targets = hub_targets(store, hub)
+    if targets:
+        res = [(ip, *nat_check(ip, listener_port)) for ip in targets]
+        worst = 'fail' if any(r[1] == 'fail' for r in res) else 'unknown' if any(r[1] == 'unknown' for r in res) else 'ok'
+        add('nat', 'Port 443 → listener for the hub', worst, ' · '.join(d for _, _, d in res), 'nat' if worst == 'fail' else None)
     else:
-        add('nat', 'Port 443 → listener for the hub', 'wait', 'Set once the hub is found')
-    sess = hub.session
-    add('session', 'Hub connected', 'ok' if sess else 'wait', f'{sess["id"]} at {sess["ip"]}' if sess else 'No hub connected right now')
+        add('nat', 'Port 443 → listener for the hub', 'wait', 'Needs the hub\'s address: enter it below (Hub IP), set OPENROOST_HUB_IP in .env, '
+            'or wait: OpenRoost spots the hub in Pi-hole\'s query log once the hub looks up Roost\'s cloud')
+    hv = hub.hub_view()
+    add('session', 'Hub connected', 'ok' if hv['online'] else 'wait',
+        f'{hv["id"]} at {hv["ip"]}' if hv['online'] else (f'Last seen {int((time.time() - hv["lastSeen"]) // 60)} min ago' if hv.get('lastSeen') else 'No hub connected right now'))
+    from . import resolver
+    r = resolver.info()
+    src = 'OpenRoost\'s Pi-hole' if r['mode'] == 'bundled' else 'OPENROOST_DNS'
+    detail = 'System resolver (/etc/resolv.conf)' if r['mode'] == 'system' else f'{", ".join(r["servers"])} ({src}), system resolver as fallback'
+    add('resolver', 'DNS for OpenRoost itself', 'ok' if not r.get('lastError') else 'unknown', detail + (f' · last error: {r["lastError"]}' if r.get('lastError') else ''))
     if os.environ.get('OPENROOST_IN_DOCKER') == '1':
         add('boot', 'Starts on boot', 'ok', 'Runs as a Docker service that restarts with the server; the port redirect is re-added on every start')
     else:

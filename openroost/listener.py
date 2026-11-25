@@ -59,6 +59,7 @@ def _enc_len(n):
 class Session:
     def __init__(self, conn, ip):
         self.conn, self.ip, self.lock, self.pid = conn, ip, threading.Lock(), 0
+        self.token = os.urandom(6).hex()                        # tells this connection apart from the hub's next one
         self.config_topic = self.cmd_topic = None
 
     def send(self, data):
@@ -195,7 +196,7 @@ class Listener:
             finally:
                 self.trace(ip, 'closed', reason=reason)
                 if sess in self.sessions:
-                    self.sessions.discard(sess); self.hub.on_disconnect()
+                    self.sessions.discard(sess); self.hub.on_disconnect(reason, sess.token)
                 try: conn.close()
                 except OSError: pass
         finally:
@@ -247,10 +248,18 @@ class Listener:
                 if not self.hub.accept_client(client_id, ip):
                     sess.send(b'\x20\x02\x00\x05'); self.trace(ip, 'connack', code=5, note='not the claimed hub'); return
                 sess.send(b'\x20\x02\x00\x00'); self.trace(ip, 'connack', code=0)
-                self.sessions.add(sess); self.hub.on_connect(client_id, ip)
-            elif sess not in self.sessions:
+                sess.client_id = client_id
+                for old in [x for x in list(self.sessions) if getattr(x, 'client_id', None) == client_id]:
+                    self.sessions.discard(old)                     # MQTT 3.1.4-2: a new CONNECT with the same client ID replaces the old one
+                    self.trace(old.ip, 'replaced', note='the hub reconnected; its previous connection is closed')
+                    try: socket.socket.shutdown(old.conn, socket.SHUT_RDWR)
+                    except OSError: pass
+                self.sessions.add(sess); self.hub.on_connect(client_id, ip, sess.token)
+                continue
+            if sess not in self.sessions:
                 self.trace(ip, 'packet', type=ptype, note='before CONNECT', hex=body[:200].hex()); return
-            elif ptype == 3:                                    # PUBLISH
+            self.hub.on_activity(sess.token)
+            if ptype == 3:                                    # PUBLISH
                 qos = (flags >> 1) & 3
                 topic, i = _mqtt_str(body, 0); pid = None
                 if qos: pid = body[i:i + 2]; i += 2
@@ -275,7 +284,7 @@ class Listener:
                     if t.endswith('/config'):
                         sess.config_topic = t; sess.publish(t, b'', min(q, 1)); sent = True   # empty /config keeps the hub online
                         self.trace(ip, 'sent', topic=t, qos=min(q, 1), pid=sess.pid, empty=True, note='empty /config keeps the hub connected')
-                self.hub.on_subscribe([t for t, _ in topics], sent)
+                self.hub.on_subscribe([t for t, _ in topics], sent, sess.token)
             elif ptype == 12:                                   # PINGREQ
                 sess.send(b'\xd0\x00'); self.trace(ip, 'ping')
             elif ptype == 14:                                   # DISCONNECT

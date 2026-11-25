@@ -9,7 +9,7 @@ OPENROOST_PROXY_IPS). Every option also has an environment variable (see README.
 """
 import argparse, getpass, os, sys, threading, time
 
-from . import __version__, services, tls
+from . import __version__, resolver, services, tls
 from .bus import Bus
 from .hub import Hub
 from .listener import Listener
@@ -34,27 +34,47 @@ def run(a):
     hub = Hub(store, bus, notifier)
     notifier.attach(bus)
 
-    def ensure_nat(ip):
-        """Keep the hub's port 443 redirected to the listener (needs NET_ADMIN; the Docker stack grants it)."""
-        if store.get_settings().get('manageNat', True) is False or not ip: return
-        try:
-            import ipaddress
-            if ipaddress.ip_address(ip).is_loopback: return            # a hub is never on loopback (tests are)
-        except ValueError: return
-        def work():
-            status, detail = services.nat_check(ip, a.listener_port)
-            if status != 'fail': return
-            try:
-                services.nat_add(ip, a.listener_port); log(f'Port 443 -> {a.listener_port} redirect added for hub {ip}')
-                store.add_event(time.time(), 'system', 'info', 'Port redirect added', f'Hub {ip}: 443 → {a.listener_port}')
-            except services.ServiceError as e:
-                log(f'Couldn\'t add the port redirect for {ip}: {e}')
-        threading.Thread(target=work, daemon=True).start()
-    hub.nat_hook = ensure_nat
+    resolver.configure(bundled_port=services.BUNDLED_PIHOLE_DNS_PORT, bundled_on=bool(services.BUNDLED_PIHOLE_URL and services.bundled_pihole_password()))
+    r = resolver.info()
+    log('DNS for OpenRoost\'s own lookups: ' + (', '.join(r['servers']) + ' (system resolver as fallback)' if r['servers'] else 'system resolver'))
+
+    nat_lock = threading.Lock()
+
+    def keep_nat(extra=None, why=''):
+        """Keep the hub's port 443 redirected to the listener (needs NET_ADMIN; the Docker stack grants it). Runs at
+        start-up, every minute, and whenever the hub's address is learned or changed, so a firewall reload, a reboot or
+        a new DHCP lease never leaves the hub cut off."""
+        if store.get_settings().get('manageNat', True) is False: return
+        with nat_lock:
+            for ip in services.hub_targets(store, hub) + ([extra] if extra else []):
+                try:
+                    import ipaddress
+                    if ipaddress.ip_address(ip).is_loopback: continue           # a hub is never on loopback (tests are)
+                except ValueError: continue
+                try:
+                    if services.nat_ensure(ip, a.listener_port) == 'added':
+                        log(f'Port 443 -> {a.listener_port} redirect added for hub {ip}{" (" + why + ")" if why else ""}')
+                        store.add_event(time.time(), 'system', 'info', 'Port redirect added', f'Hub {ip}: 443 → {a.listener_port}')
+                except services.ServiceError as e:
+                    if not nat_warned.get(ip): log(f'Couldn\'t add the port redirect for {ip}: {e}')
+                    nat_warned[ip] = True
+    nat_warned = {}
+
+    def find_hub():
+        """No hub connected and no address known? Look for it in Pi-hole's query log."""
+        if hub.session or (hub.hub_view() or {}).get('online'): return
+        if (store.get_settings().get('ph') or {}).get('mode') not in ('bundled', 'existing'): return
+        ip = services.find_hub_in_pihole(store)
+        if ip and ip not in services.hub_targets(store, hub):
+            store.set_kv('hubSeen', {'ip': ip, 't': time.time()})
+            log(f'Spotted the hub at {ip} in Pi-hole\'s query log')
+            store.add_event(time.time(), 'system', 'info', 'Hub spotted in Pi-hole', f'{ip} looked up Roost\'s cloud')
+            keep_nat(why='found in Pi-hole')
+
+    hub.nat_hook = lambda ip: threading.Thread(target=keep_nat, args=(ip, 'hub address learned'), daemon=True).start()
     Listener(hub, a.data, a.listener_port, a.bind, log).start()
     log(f'Hub listener on {a.bind}:{a.listener_port} (TLS: MQTT + getCurrentTime)')
-    claim = hub.claim()
-    if claim and claim.get('ip'): ensure_nat(claim['ip'])
+    threading.Thread(target=keep_nat, kwargs={'why': 'start-up'}, daemon=True).start()
 
     if not store.setup_done():
         code = store.new_setup_code()
@@ -64,10 +84,16 @@ def run(a):
         log(f'First-time setup code: {code}  (also in {path}; changes on every restart until setup is done)')
 
     def ticker():
+        n = 0
         while True:
-            time.sleep(60)
+            time.sleep(60); n += 1
             try: hub.tick()
             except Exception as e: log(f'tick failed: {e!r}')
+            try: keep_nat()
+            except Exception as e: log(f'port redirect check failed: {e!r}')
+            if n % 2 == 1:
+                try: find_hub()
+                except Exception as e: log(f'hub search failed: {e!r}')
     threading.Thread(target=ticker, daemon=True, name='tick').start()
     updates = Updates(store, log).start()
 
@@ -79,6 +105,8 @@ def run(a):
         crt, key, own = tls.ensure_web_cert(a.data, hosts)
         ctx, fp = tls.server_context(crt, key), tls.fingerprint(crt)
     app = App(store, hub, notifier, a.web, a.listener_port, hosts, a.https_port if use_tls else None, proxies, fp, updates)
+    app.keep_nat = lambda: threading.Thread(target=keep_nat, kwargs={'why': 'settings changed'}, daemon=True).start()
+    app.find_hub = find_hub
     servers = []
     if use_tls:
         servers.append(app.serve(a.bind, a.https_port, ctx))

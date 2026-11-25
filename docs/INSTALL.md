@@ -18,7 +18,9 @@ The defaults work for most homes. Things you might change:
 |---|---|
 | `TZ` | Your time zone, for logs |
 | `OPENROOST_HTTPS_PORT` (8443), `OPENROOST_HTTP_PORT` (8362), `OPENROOST_LISTENER_PORT` (8883) | If something else uses these ports |
-| `OPENROOST_HOSTS` | If you open OpenRoost by a host name that isn't an IP address or `*.local` / `*.lan` / `*.home.arpa` |
+| `OPENROOST_HOSTS` | If you open OpenRoost by a host name that isn't an IP address or `*.local` / `*.lan` / `*.home.arpa` (also needed for Authentik sign-in through a domain) |
+| `OPENROOST_HUB_IP` | The hub's IP address (give it a DHCP reservation). Optional: setup asks for it, and OpenRoost can spot it in Pi-hole's query log |
+| `OPENROOST_DNS` | DNS server(s) for OpenRoost's own lookups (Matrix, email, Authentik). Blank = its own Pi-hole if that profile runs, else the host's `/etc/resolv.conf`. Compose can't set `dns:` with host networking, hence this |
 | `COMPOSE_PROFILES` | Add `pihole` and/or `mailrelay` to have OpenRoost run them for you (steps 3 and 4) |
 
 > **Already running the research listener (`roost_listen.py`)?** Stop it first: it uses port 8883 too.
@@ -111,6 +113,9 @@ server. It notices by itself when a room is encrypted and encrypts its messages;
 default), new DMs to emergency contacts are created encrypted. Settings shows the bot device's fingerprint if you want
 to verify it in Element. Each time the bot signs in again it becomes a new device, and new DMs are created.
 
+**Homeserver address.** You can enter your server name (`https://example.org`): OpenRoost follows its
+`/.well-known/matrix/client` to the real homeserver (e.g. `https://matrix.example.org`) and saves that.
+
 ## 6. Emergency countdown (optional)
 
 Settings → Notifications → **Emergency countdown**. When a break-in, fire alarm or distress (hostage) PIN happens, the
@@ -137,8 +142,13 @@ wouldn't be with you, or turn the distress countdown off.
 ## 7. Find the hub
 
 In setup, **Find your SmartBase** shows the hub as soon as it connects. If it's already on your Wi-Fi and using your
-Pi-hole, it usually appears within a minute; otherwise unplug it for 10 seconds. OpenRoost then trusts only that hub
-and keeps its port 443 redirected to the listener. You name your sensors next; they appear as the hub reports them
+Pi-hole, it usually appears within a minute; otherwise unplug it for 10 seconds. OpenRoost then trusts only that hub.
+
+**Port 443.** The hub talks to the cloud on port 443, so this server redirects the hub's port 443 to the listener
+(an iptables rule; the container has `NET_ADMIN` for it). The rule needs the hub's address, which OpenRoost gets from
+(any of) the setup step's **Hub IP** box, `OPENROOST_HUB_IP` in `.env`, Settings → Hub & network, or by spotting the
+hub in Pi-hole's query log. From then on it checks the rule every minute and re-adds it after reboots, firewall
+reloads and address changes: no manual `iptables` command is needed. You name your sensors next; they appear as the hub reports them
 (open a door to see which is which).
 
 If the hub doesn't show up:
@@ -154,6 +164,13 @@ Add family under Settings → Account → Household members (owner, member or vi
 yourself, or create an **invite link** (it can be emailed for you) that works once and lets them choose their own
 username and password. Optional: two-factor codes for each
 account, and Authentik single sign-on (the redirect URI to paste into Authentik is shown there).
+
+**Authentik.** Create an OAuth2/OpenID provider (confidential client; a signing key is optional) with the redirect URI
+from Settings → Account → Single sign-on, and an application for it. Fill in the issuer
+(`https://auth.example.com/application/o/<slug>/`), client ID and secret, press **Test connection** and save. Then, still
+signed in with your password, use **Link Authentik** under *Your Authentik account*, so Authentik opens your existing
+owner account. Groups `openroost-admins` / `openroost-members` set the role (no groups claim at all: the role isn't
+touched). If you reach OpenRoost by a domain name, list it in `OPENROOST_HOSTS`.
 
 ## Behind a reverse proxy (e.g. Nginx Proxy Manager)
 
@@ -171,8 +188,18 @@ cd OpenRoost360
 ./update.sh            # newest release; ./update.sh main for the newest development version
 ```
 
-It fetches the release with git, rebuilds the image and restarts the container; `./data` is kept. (If your copy of
-the repository is private, set `OPENROOST_UPDATE_TOKEN` in `.env` so the update check can read the tags.)
+It fetches the release with git, rebuilds the image and restarts the container. Everything lives in `./data`
+(database with settings, sensors, names, users; master key; certificates) and `.env`, neither of which git or the
+rebuild touches. The database only ever gains tables and columns, and before a new version (or commit) first opens it,
+OpenRoost copies it to `data/backups/` (the last 5 are kept). (If your copy of the repository is private, set
+`OPENROOST_UPDATE_TOKEN` in `.env` so the update check can read the tags.)
+
+**Releases** are git tags named `vMAJOR.MINOR.PATCH` matching `openroost/__init__.py`. Until the first one is pushed,
+the update check compares with the newest commit on `main` instead. To publish one:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
 
 ## Without Docker
 

@@ -79,6 +79,10 @@ body.logged-out > :not(.login-wrap):not(.toasts){display:none!important}
 .dev-act .dev-rm{background:none;border-color:transparent;color:var(--muted)}.dev-act .dev-rm:hover{color:var(--crit);border-color:var(--line);background:var(--card)}
 .dev-act .dev-rm-strong{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 35%,var(--line));background:var(--card)}
 .dev.missing .dev-act{border-top-style:dashed}
+.dev.waiting{background:transparent;border:1px dashed var(--line)} .dev.waiting .ico{color:var(--muted);background:var(--card2)} .dev.waiting .state{color:var(--muted)}
+.dev-hub .ico{color:var(--accent)} .dev-hub.hot .ico{color:var(--warn)}
+.eyebrow .btn{text-transform:none;letter-spacing:0;font-weight:600}
+.nat-ip{margin-top:12px}
 .missing-note{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--muted);margin:-4px 0 14px}.missing-note .ic{color:var(--warn);margin-top:2px}
 .meta{display:flex;gap:10px;font-size:12px;color:var(--muted);align-items:center;flex-wrap:wrap}
 .meta .low{color:var(--warn);font-weight:600}
@@ -152,7 +156,8 @@ textarea.in{resize:vertical}
 .f-toggle .f-ctl,.f-segmented .f-ctl,.f-swatches .f-ctl{display:flex;justify-content:flex-end}
 .group-actions{display:flex;gap:8px;flex-wrap:wrap;padding:10px 0 6px;align-items:center}
 .custom{padding:8px 0;border-bottom:1px solid var(--line)}.custom:last-child{border-bottom:0}
-.save-bar{position:sticky;bottom:var(--save-bottom,16px);display:flex;align-items:center;gap:10px;padding:12px 14px 12px 20px;border-radius:99px;background:var(--ink);color:var(--bg);box-shadow:var(--shadow);z-index:5}
+.save-bar[hidden]{display:none}
+.save-bar{justify-content:flex-end;position:sticky;bottom:var(--save-bottom,16px);display:flex;align-items:center;gap:10px;padding:12px 14px 12px 20px;border-radius:99px;background:var(--ink);color:var(--bg);box-shadow:var(--shadow);z-index:5}
 .save-bar .btn{background:transparent;color:var(--bg);border-color:color-mix(in srgb,var(--bg) 30%,transparent)}
 .save-bar .btn-primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent,#fff)}
 .save-hint{margin-right:auto;font-size:13px;opacity:.85}
@@ -417,3 +422,8 @@ table.mx input{accent-color:var(--accent);width:18px;height:18px}
 @media (max-width:640px){.wire li{grid-template-columns:auto minmax(0,1fr)}.wire .wip{display:none}.wire .wsum{grid-column:1/-1}}
 .alert.esc-pending{background:var(--crit);color:#fff;outline:3px solid color-mix(in srgb,var(--crit) 35%,transparent);outline-offset:3px}.alert.esc-pending h3{color:#fff}.alert.esc-pending .btn{background:#fff;color:var(--crit);font-weight:700}
 .alert.esc-ok{background:var(--ok)}
+
+/* hand-add dialog: devices heard from but not tracked */
+.ut-list{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+.ut-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;background:var(--card2)}
+.ut-list li.on{border-color:var(--accent)}

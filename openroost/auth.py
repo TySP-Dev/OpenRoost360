@@ -65,14 +65,14 @@ class Oidc:
         self.cache[issuer] = {'t': time.time(), 'cfg': cfg}
         return cfg
 
-    def start(self, st, redirect_uri, remember):
+    def start(self, st, redirect_uri, remember, link_uid=None):
         cfg = self.discover(st['ssoIssuer'])
         state, nonce, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(24), secrets.token_urlsafe(48)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
         with self.lock:
             now = time.time()
             self.pending = {k: v for k, v in self.pending.items() if v['t'] > now - 600}
-            self.pending[state] = {'t': now, 'nonce': nonce, 'verifier': verifier, 'redirect': redirect_uri, 'remember': remember}
+            self.pending[state] = {'t': now, 'nonce': nonce, 'verifier': verifier, 'redirect': redirect_uri, 'remember': remember, 'link': link_uid}
         q = {'response_type': 'code', 'client_id': st.get('ssoClientId', ''), 'redirect_uri': redirect_uri, 'scope': st.get('ssoScopes') or 'openid profile email',
              'state': state, 'nonce': nonce, 'code_challenge': challenge, 'code_challenge_method': 'S256'}
         return cfg['authorization_endpoint'] + '?' + urllib.parse.urlencode(q)
@@ -84,23 +84,35 @@ class Oidc:
         tok = _get_json(cfg['token_endpoint'], urllib.parse.urlencode({
             'grant_type': 'authorization_code', 'code': code, 'redirect_uri': p['redirect'], 'client_id': st.get('ssoClientId', ''),
             'client_secret': client_secret or '', 'code_verifier': p['verifier']}).encode())
-        claims = self.verify_id_token(cfg, st.get('ssoClientId', ''), tok.get('id_token', ''), p['nonce'])
-        return claims, p['remember']
+        claims = self.verify_id_token(cfg, st.get('ssoClientId', ''), tok.get('id_token', ''), p['nonce'], client_secret)
+        if 'groups' not in claims and tok.get('access_token') and cfg.get('userinfo_endpoint'):
+            try:                                                  # some providers only put groups in userinfo
+                req = urllib.request.Request(cfg['userinfo_endpoint'], headers={'Authorization': 'Bearer ' + tok['access_token'], 'Accept': 'application/json', 'User-Agent': 'OpenRoost360'})
+                with urllib.request.urlopen(req, timeout=10) as r: ui = json.loads(r.read())
+                if isinstance(ui, dict) and ui.get('sub') == claims.get('sub') and isinstance(ui.get('groups'), list): claims['groups'] = ui['groups']
+            except (urllib.error.URLError, OSError, ValueError): pass
+        return claims, p['remember'], p.get('link')
 
-    def verify_id_token(self, cfg, client_id, token, nonce):
+    def verify_id_token(self, cfg, client_id, token, nonce, client_secret=None):
         try:
             h64, c64, s64 = token.split('.')
             header, claims, sig = json.loads(_b64u(h64)), json.loads(_b64u(c64)), _b64u(s64)
         except (ValueError, TypeError):
             raise OidcError('Malformed ID token') from None
         alg = header.get('alg')
-        if alg not in ('RS256', 'ES256'): raise OidcError(f'Unsupported token algorithm {alg}')
-        keys = _get_json(cfg['jwks_uri']).get('keys', [])
-        key = next((k for k in keys if k.get('kid') == header.get('kid')), None) or (keys[0] if len(keys) == 1 else None)
-        if not key: raise OidcError('Signing key not found')
+        if alg not in ('RS256', 'ES256', 'HS256'): raise OidcError(f'Unsupported token algorithm {alg}')
         signed = f'{h64}.{c64}'.encode()
+        if alg == 'HS256':          # Authentik signs with the client secret when the provider has no signing key selected
+            if not client_secret: raise OidcError('The ID token is signed with the client secret (HS256), but no client secret is set')
+            if not hmac.compare_digest(hmac.new(client_secret.encode(), signed, hashlib.sha256).digest(), sig): raise OidcError('ID token signature is invalid')
+            key = None
+        else:
+            keys = _get_json(cfg['jwks_uri']).get('keys', [])
+            key = next((k for k in keys if k.get('kid') == header.get('kid')), None) or (keys[0] if len(keys) == 1 else None)
+            if not key: raise OidcError('Signing key not found')
         try:
-            if alg == 'RS256':
+            if alg == 'HS256': pass
+            elif alg == 'RS256':
                 pub = rsa.RSAPublicNumbers(int.from_bytes(_b64u(key['e']), 'big'), int.from_bytes(_b64u(key['n']), 'big')).public_key()
                 pub.verify(sig, signed, padding.PKCS1v15(), hashes.SHA256())
             else:
@@ -119,7 +131,10 @@ class Oidc:
 
 
 def role_from_groups(st, groups):
-    groups = set(groups or [])
+    """owner / member / viewer from the provider's groups claim; None when the token carries no groups at all (then an
+    existing account keeps its role rather than being demoted by a provider that doesn't send groups)."""
+    if groups is None: return None
+    groups = set(groups if isinstance(groups, list) else [groups])
     if st.get('ssoAdminGroup') and st['ssoAdminGroup'] in groups: return 'owner'
     if st.get('ssoMemberGroup') and st['ssoMemberGroup'] in groups: return 'member'
     return 'viewer'

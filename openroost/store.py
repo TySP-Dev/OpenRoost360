@@ -30,6 +30,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from . import __version__
+_BUILD = (os.environ.get('OPENROOST_BUILD') or '').strip()
+RUNNING = __version__ + (f'+{_BUILD[:7]}' if _BUILD and _BUILD != 'unknown' else '')   # version + commit
 
 ARGON = dict(length=32, iterations=3, lanes=4, memory_cost=65536)  # 64 MiB
 ROLES = ('owner', 'member', 'viewer')
@@ -389,6 +392,7 @@ class Store:
         _check_private(self.path)
         self.db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.db.execute('PRAGMA foreign_keys=ON'); self.db.execute('PRAGMA journal_mode=WAL'); self.db.execute('PRAGMA secure_delete=ON')
+        if not new: self._snapshot_on_upgrade()
         self.db.executescript(DDL)
         for table, col, ddl in MIGRATIONS:
             if col not in {r[1] for r in self.db.execute(f'PRAGMA table_info({table})')}:
@@ -403,6 +407,37 @@ class Store:
             raise SystemExit(f'The master key ({self.keys.id}) is not the one this database was encrypted with ({db_key}). '
                              'Restore the matching master.key (it is inside every OpenRoost backup).')
         self._load_old_peppers()
+        self._migrate_settings()
+        self.set_meta('version', RUNNING)
+
+    # ---- updates keep everything: data lives in the data folder, the schema only ever grows (new tables / columns),
+    # and before a different version first opens the database a copy is kept in data/backups/.
+    KEEP_SNAPSHOTS = 5
+
+    def _snapshot_on_upgrade(self):
+        try: r = self.db.execute("SELECT value FROM meta WHERE key='version'").fetchall()
+        except sqlite3.OperationalError: r = []
+        old = r[0][0] if r else 'unknown'
+        if old == RUNNING: return
+        folder = os.path.join(self.data_dir, 'backups')
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        dest = os.path.join(folder, f'openroost-{time.strftime("%Y%m%d-%H%M%S")}-{re.sub(r"[^0-9A-Za-z.+]", "", old)}.db')
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600); os.close(fd)
+        out = sqlite3.connect(dest)
+        try: self.db.backup(out)
+        finally: out.close()
+        snaps = sorted(f for f in os.listdir(folder) if f.startswith('openroost-') and f.endswith('.db'))
+        for f in snaps[:-self.KEEP_SNAPSHOTS]:
+            try: os.remove(os.path.join(folder, f))
+            except OSError: pass
+        print(f'Database copied to {dest} before opening it with {RUNNING} (was {old})', flush=True)
+
+    def _migrate_settings(self):
+        """One-time changes to stored settings. Each runs once (marked in meta) and only touches values the owner never
+        changed from an old default."""
+        if self.meta('mig.lowbat35') is None:
+            if self.get_settings().get('lowBat') == 20: self.save_settings({'lowBat': 35})      # old default 20 % → 35 %
+            self.set_meta('mig.lowbat35', '1')
 
     def _load_old_peppers(self):
         self.keys.old_peppers = {}

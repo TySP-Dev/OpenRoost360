@@ -188,7 +188,15 @@ function watch(f) {
     ];
     const n = steps.findIndex(x => !x[0]); const doneAll = n === -1;
     st.hubFound = doneAll && !!h.id;
-    f.innerHTML = `<ol class="su-steps">
+    const nat = s.nat || [], natOk = nat.some(x => x.status === 'ok'), seen = s.hubSeen;
+    const natBox = st.hubFound ? '' : `<div class="su-card nat-box"><div class="eyebrow su-eyebrow">Port 443 → OpenRoost</div>
+      ${natOk ? `<div class="su-chk ok su-chk-tight"><span class="st">${I('check')}</span><div><b>Redirect in place</b><small>${nat.filter(x => x.status === 'ok').map(x => esc(x.ip)).join(', ')}: the hub's port 443 goes to the listener</small></div></div>`
+        : `<p class="f-help">The hub talks to Roost's cloud on port 443, so this server sends the hub's port 443 traffic to OpenRoost's listener. That needs the hub's IP address.
+          ${seen ? `OpenRoost spotted <b>${esc(seen.ip)}</b> asking Pi-hole for Roost's cloud; that's almost certainly the hub.` : 'Find it in your router\'s list of devices (it may show as an Espressif or Roost device), and give it a DHCP reservation so it keeps it.'}</p>
+          ${nat.length ? `<div class="f-help err-t">${nat.map(x => `${esc(x.ip)}: ${x.status === 'unknown' ? 'can\'t check the rule (OpenRoost needs the NET_ADMIN permission)' : 'no redirect yet'}`).join(' · ')}</div>` : ''}
+          <form class="su-row" data-natf><input class="in" name="ip" inputmode="decimal" placeholder="Hub IP, e.g. 192.168.1.50" value="${esc(st.natIp ?? (s.hubIp || (seen && seen.ip) || ''))}" required pattern="\\d{1,3}(\\.\\d{1,3}){3}" style="flex:1;min-width:160px" aria-label="The hub's IP address"><button class="btn btn-primary btn-sm">Add the redirect</button></form>
+          <p class="f-help">OpenRoost keeps this rule in place from now on (after reboots and firewall reloads). You can also set <code>OPENROOST_HUB_IP</code> in <code>.env</code>.</p>`}</div>`;
+    const html = `<ol class="su-steps">
         <li class="${doneAll ? 'done' : 'cur'}"><div><b>Connect the hub</b><p>If it's already connected through Pi-hole it shows up right away. Otherwise unplug the SmartBase for 10 seconds and plug it back in: when it starts it asks Pi-hole for Roost's cloud and gets sent here.</p></div></li>
         <li class="${doneAll ? 'done' : 'cur'}"><div><b>Listener detects the hub</b><p>Usually within a minute.</p>
           <ul class="su-log" aria-live="polite">${steps.map(([ok, t], i) => ok ? `<li>${I('check')}<span>${t}</span></li>` : i === n ? `<li class="wait"><span class="spin"></span><span>Waiting for the hub…</span></li>` : '').join('')}</ul></div></li>
@@ -197,7 +205,21 @@ function watch(f) {
       ${st.hubFound ? `<div class="su-hub"><div class="su-hub-h">${I('check')}<div><b>Found your SmartBase</b><div class="f-help">OpenRoost will trust only this hub from now on.</div></div></div>
         <dl class="kv"><div><dt>Hub ID</dt><dd>${esc(h.id)}</dd></div><div><dt>Address</dt><dd>${esc(h.ip || '—')}</dd></div><div><dt>Firmware</dt><dd>${esc(h.firmware.hub)}</dd></div>
         <div><dt>Wi-Fi</dt><dd>${h.wifi ? esc(h.wifi.ssid) + ' · ' + h.wifi.rssi + ' dBm' : '—'}</dd></div><div><dt>Power</dt><dd>${h.power === 'mains' ? 'Mains' : h.power === 'battery' ? 'Battery' : '—'}</dd></div></dl></div>` : ''}
-      ${!st.hubFound ? `<details class="note"><summary><b>Taking more than 2 minutes?</b></summary><ul class="steps"><li>Check the hub really uses your Pi-hole for DNS (previous step). Some routers only apply DHCP changes after the hub renews its lease, so restart it once more.</li><li>Look in Pi-hole's query log for the hub's address asking for <code>us-central1-roostprod.cloudfunctions.net</code>.</li><li>The hub sends MQTT to port 443: this server must redirect the hub's port 443 to the listener (Settings → Hub &amp; network → Redirect health, after setup).</li><li>The light ring should be solid, not blinking. Blinking means pairing or setup mode.</li></ul></details>` : ''}`;
+      ${natBox}
+      ${!st.hubFound ? `<details class="note"><summary><b>Taking more than 2 minutes?</b></summary><ul class="steps"><li>Check the hub really uses your Pi-hole for DNS (previous step). Some routers only apply DHCP changes after the hub renews its lease, so restart it once more.</li><li>Look in Pi-hole's query log for the hub's address asking for <code>us-central1-roostprod.cloudfunctions.net</code>.</li><li>Make sure the port redirect above is in place for the hub's address.</li><li>The light ring should be solid, not blinking. Blinking means pairing or setup mode.</li></ul></details>` : ''}`;
+    // only touch the page when something changed: rebuilding it every poll closed the dropdown and scrolled the page
+    const typing = f.contains(document.activeElement) && document.activeElement.matches('input');
+    if (!typing && M.setHTML(f, html)) {
+      const form = f.querySelector('[data-natf]');
+      if (form) {
+        form.elements.ip.oninput = () => { st.natIp = form.elements.ip.value; };
+        form.onsubmit = async e => {
+          e.preventDefault(); const b = form.querySelector('button'); b.disabled = true; b.innerHTML = '<span class="spin"></span>';
+          try { await call('fix/nat', { ip: form.elements.ip.value.trim() }); M.toast('Port redirect added. The hub connects within a minute or two.'); st.natIp = undefined; await tick(); }
+          catch (err) { M.toast(esc(err.message), 'err', 8000); b.disabled = false; b.textContent = 'Add the redirect'; }
+        };
+      }
+    }
     nav();
   };
   const tick = async () => { try { st.state = await call('state'); } catch (e) { /* keep last */ } draw(); };
@@ -280,7 +302,13 @@ function matrix(el) {
   g('mp').oninput = () => { m.pass = g('mp').value; };
   el.querySelector('[data-login]').onclick = async e => {
     const msg = el.querySelector('[data-lmsg]'); e.currentTarget.disabled = true; msg.innerHTML = '<span class="spin"></span> Signing in…';
-    try { const r = await call('matrix-login', { hs: m.hs, user: m.user, password: m.pass }); m.signedIn = true; m.pass = ''; m.note = r.note || ''; matrix(el); }
+    try {
+      const r = await call('matrix-login', { hs: m.hs, user: m.user, password: m.pass });
+      const moved = r.hs && r.hs.replace(/\/$/, '') !== m.hs.replace(/\/$/, '');
+      m.note = [moved ? `Found your server's Matrix address through ${m.hs}: ${r.hs}.` : '', r.note || ''].filter(Boolean).join(' ');
+      if (r.hs) m.hs = r.hs;
+      m.signedIn = true; m.pass = ''; matrix(el);
+    }
     catch (err) { msg.innerHTML = `<b class="err-t">${esc(err.message)}</b>`; e.currentTarget.disabled = false; }
     nav();
   };

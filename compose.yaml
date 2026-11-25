@@ -24,7 +24,8 @@ services:
     container_name: openroost360
     restart: unless-stopped
     # Host networking: the hub's port 443 is redirected (by an iptables rule on this host) to the listener, and
-    # OpenRoost manages that rule itself, so it has to share the host's network.
+    # OpenRoost manages that rule itself, so it has to share the host's network. (Compose can't combine `dns:` with
+    # host networking, which is why the DNS server is chosen with OPENROOST_DNS below instead.)
     network_mode: host
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]          # only for the port 443 -> listener iptables rule
@@ -46,6 +47,8 @@ services:
       OPENROOST_TLS_KEY: ${OPENROOST_TLS_KEY:-}
       OPENROOST_UPDATE_TOKEN: ${OPENROOST_UPDATE_TOKEN:-}
       OPENROOST_WIRE_STDOUT: ${OPENROOST_WIRE_STDOUT:-0}      # 1 = protocol log in `docker compose logs -f openroost`
+      OPENROOST_HUB_IP: ${OPENROOST_HUB_IP:-}          # the hub's address: its port 443 -> listener redirect is kept in place
+      OPENROOST_DNS: ${OPENROOST_DNS:-}                # DNS for OpenRoost's own lookups; blank = its own Pi-hole if running, else the host's
       # bundled services (only used when their profile is running)
       OPENROOST_BUNDLED_PIHOLE_URL: ${OPENROOST_BUNDLED_PIHOLE_URL:-http://127.0.0.1:${PIHOLE_WEB_PORT:-8053}/admin}
       OPENROOST_BUNDLED_PIHOLE_PASSWORD: ${PIHOLE_PASSWORD:-}

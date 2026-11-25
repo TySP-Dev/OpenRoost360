@@ -9,6 +9,7 @@ Auth
 Live data: GET /api/v1/stream (server-sent events). Planned features answer 501 with
 {"error": "Planned, unsupported", "feature": "<id>"} — see GET /api/v1/features.
 """
+from html import escape as html_escape
 import collections, http.server, ipaddress, json, os, re, secrets, socket, ssl, sys, threading, time, urllib.parse
 from http import cookies
 from urllib.parse import urlsplit, parse_qs
@@ -16,6 +17,7 @@ from urllib.parse import urlsplit, parse_qs
 from . import __version__, auth, backup, emails, features, services
 from .notify import NotifyError, Notifier
 from .services import ServiceError
+from .hub import MANUAL_TYPES
 from .store import ROLES, SECRET_PATHS, V, ValidationError
 
 MAX_BODY = 64 * 1024
@@ -88,6 +90,8 @@ class App:
         self.https_port, self.proxies, self.fingerprint, self.updates = https_port, set(proxies), tls_fingerprint, updates
         self.rate = RateLimit()
         self.throttle, self.oidc = Throttle(store), auth.Oidc()
+        self.keep_nat = self.find_hub = None              # set by __main__: re-check the port redirect / look for the hub in Pi-hole
+        self._hub_search = 0
         self.setup_lock, self.invite_lock, self.mfa = threading.Lock(), threading.Lock(), {}          # mfa: ticket -> (uid, remember, expires, kind, name)
         self.dummy_hash = store.keys.hash_password(os.urandom(16).hex())
         self.routes = []
@@ -119,6 +123,13 @@ class App:
         if not self.store.check_setup_code(code):
             self.throttle.fail('setup:' + h.ip); self.store.audit('-', h.ip, 'setup.code_wrong')
             raise ApiError(403, 'That setup code is wrong. It is printed in the server log and saved in the data folder as SETUP-CODE.txt.')
+
+    def oidc_redirect(self, h):
+        """The redirect URI sent to Authentik: the dashboard address set in Settings → System when there is one (it must
+        match what's registered in Authentik exactly), else the address this browser used."""
+        pub = (self.store.get_settings().get('publicUrl') or '').strip().rstrip('/')
+        if pub and urlsplit(pub).netloc.lower() == (h.headers.get('Host') or '').lower(): return pub + '/api/v1/auth/oidc/callback'
+        return h.origin() + '/api/v1/auth/oidc/callback'
 
     def snapshot_settings(self):
         return {'settings': self.store.get_settings(), 'secretsSet': self.store.secrets_set()}
@@ -162,12 +173,17 @@ class App:
         def setup_fix(h, sess, fix):
             b = h.body(); self.need_setup_code(h, b.get('code'))
             if b.get('ph'): self._temp_ph(b['ph'])
-            h.send_json(200, self.fix(fix))
+            h.send_json(200, self.fix(fix, (b.get('ip') or '').strip() or None))
 
         @R('POST', '/api/v1/setup/state', summary='Hub, listener and sensors seen so far (setup)', tags=('setup',))
         def setup_state(h, sess):
             self.need_setup_code(h, h.body().get('code'))
-            h.send_json(200, {'listener': hub.listener_view(), 'hub': hub.hub_view(), 'sensors': hub.sensors_view()})
+            targets = services.hub_targets(st, hub)
+            if not targets and self.find_hub and time.time() - self._hub_search > 20:          # look in Pi-hole's query log
+                self._hub_search = time.time(); threading.Thread(target=self.find_hub, daemon=True).start()
+            nat = [{'ip': ip, 'status': services.nat_check(ip, self.listener_port)[0]} for ip in targets]
+            h.send_json(200, {'listener': hub.listener_view(), 'hub': hub.hub_view(), 'sensors': hub.sensors_view(), 'nat': nat,
+                              'hubSeen': st.kv('hubSeen'), 'hubIp': st.get_settings().get('hubIp') or ''})
 
         @R('POST', '/api/v1/setup/mail-test', summary='Send a test email with the settings being set up', tags=('setup',))
         def setup_mail(h, sess):
@@ -190,9 +206,9 @@ class App:
         def setup_mx_login(h, sess):
             b = h.body(); self.need_setup_code(h, b.get('code'))
             V.url(b.get('hs') or ''); V.str(255)(b.get('user') or '')
-            try: tok, note = self.notifier.matrix_login(b.get('hs') or '', b.get('user') or '', b.get('password') or '')
+            try: tok, note, base = self.notifier.matrix_login(b.get('hs') or '', b.get('user') or '', b.get('password') or '')
             except NotifyError as e: raise ApiError(400, str(e))
-            st.save_settings({'mxToken': tok, 'mxHs': b['hs'], 'mxUser': b['user']}); h.send_json(200, {'ok': True, 'note': note, 'e2ee': self.notifier.crypto.status()})
+            st.save_settings({'mxToken': tok, 'mxHs': base, 'mxUser': b['user']}); h.send_json(200, {'ok': True, 'note': note, 'hs': base, 'e2ee': self.notifier.crypto.status()})
 
         @R('POST', '/api/v1/setup/matrix-test', summary='Send a Matrix test message during setup', tags=('setup',))
         def setup_mx_test(h, sess):
@@ -324,38 +340,59 @@ class App:
             st.end_session(sess['sid']); st.audit(sess['user']['username'], h.ip, 'logout')
             h.send_json(200, {'ok': True}, set_cookie=h.cookie('', 0) if sess['kind'] == 'web' else None)
 
-        @R('GET', '/api/v1/auth/oidc/start', summary='Start single sign-on (redirects to Authentik)', tags=('auth',))
+        @R('GET', '/api/v1/auth/oidc/start', summary='Start single sign-on (redirects to Authentik). ?link=1 while signed in links your account instead', tags=('auth',))
         def oidc_start(h, sess):
             s = st.get_settings()
             if not (s.get('ssoOn') and s.get('ssoIssuer') and s.get('ssoClientId')): raise ApiError(404, 'Single sign-on isn\'t set up')
             q = parse_qs(urlsplit(h.path).query)
-            try: url = self.oidc.start(s, h.origin() + '/api/v1/auth/oidc/callback', q.get('remember', [''])[0] == '1')
+            link = sess['user']['id'] if sess and sess.get('sid') and q.get('link', [''])[0] == '1' else None
+            try: url = self.oidc.start(s, self.oidc_redirect(h), q.get('remember', [''])[0] == '1', link)
             except auth.OidcError as e: return h.redirect('/?ssoError=' + urllib.parse.quote(str(e)))
             h.redirect(url)
+
+        def land(h, to='/', set_cookie=None):
+            """After the provider sends the browser back, go on with a same-site navigation: a redirect chain that began
+            on the provider's site is cross-site, and browsers would hold back the SameSite=Strict session cookie."""
+            body = (f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={html_escape(to)}">'
+                    f'<title>Signing in…</title><p style="font-family:sans-serif">Signing in… <a href="{html_escape(to)}">Continue</a></p>').encode()
+            h.send_bytes(200, body, 'text/html; charset=utf-8', set_cookie=set_cookie)
 
         @R('GET', '/api/v1/auth/oidc/callback', summary='Single sign-on return address (set this in Authentik)', tags=('auth',))
         def oidc_cb(h, sess):
             q = parse_qs(urlsplit(h.path).query); s = st.get_settings()
             try:
                 if q.get('error'): raise auth.OidcError(q.get('error_description', q['error'])[0])
-                claims, remember = self.oidc.finish(s, st.get_secret('ssoSecret'), q.get('state', [''])[0], q.get('code', [''])[0])
+                claims, remember, link = self.oidc.finish(s, st.get_secret('ssoSecret'), q.get('state', [''])[0], q.get('code', [''])[0])
                 u = st.user_by_oidc(claims['sub']); role = auth.role_from_groups(s, claims.get('groups'))
+                if link:                                                 # "Link Authentik" from Settings → Account
+                    me_ = st.user(link)
+                    if not me_: raise auth.OidcError('Your account is gone')
+                    if u and u['id'] != link: raise auth.OidcError('That Authentik user is already linked to another OpenRoost account')
+                    st.link_oidc(link, claims['sub']); st.audit(me_['username'], h.ip, 'sso.linked', claims.get('preferred_username') or '')
+                    return land(h, '/#settings/account')
                 if not u:
-                    if not s.get('ssoAutoCreate'): raise auth.OidcError('No OpenRoost account is linked to this Authentik user.')
+                    if not s.get('ssoAutoCreate'): raise auth.OidcError('No OpenRoost account is linked to this Authentik user. Sign in with your password and use Settings → Account → Link Authentik, or turn on “Create accounts on first sign-in”.')
                     base = re.sub(r'[^A-Za-z0-9._-]', '', claims.get('preferred_username') or claims.get('email', '').split('@')[0] or 'user')[:28] or 'user'
                     name = base if len(base) >= 3 else base + '_sso'
                     while st.user_by_name(name): name = f'{base[:24]}{os.urandom(2).hex()}'
-                    uid = st.create_user(name, os.urandom(24).hex() + 'Aa!', role, (claims.get('name') or name)[:80], '')
-                    st.link_oidc(uid, claims['sub']); u = st.user(uid); st.audit(name, h.ip, 'sso.account_created', role)
-                elif u['role'] != role and not (u['role'] == 'owner' and st.owners() <= 1):
+                    uid = st.create_user(name, os.urandom(24).hex() + 'Aa!', role or 'viewer', (claims.get('name') or name)[:80], '')
+                    st.link_oidc(uid, claims['sub']); u = st.user(uid); st.audit(name, h.ip, 'sso.account_created', role or 'viewer')
+                elif role and u['role'] != role and not (u['role'] == 'owner' and st.owners() <= 1):
                     st.q('UPDATE users SET role=? WHERE id=?', role, u['id']); u = st.user(u['id'])
-                if sess: st.end_session(sess['sid'])
                 ttl = self.ttl_for(remember)
                 token, _ = st.new_session(u['id'], h.ip, h.headers.get('User-Agent'), ttl)
                 st.audit(u['username'], h.ip, 'login.sso')
-                h.redirect('/', set_cookie=h.cookie(token, ttl))
+                land(h, '/', h.cookie(token, ttl))
             except auth.OidcError as e:
-                st.audit('-', h.ip, 'login.sso_fail', str(e)); h.redirect('/?ssoError=' + urllib.parse.quote(str(e)))
+                st.audit('-', h.ip, 'login.sso_fail', str(e)); land(h, '/?ssoError=' + urllib.parse.quote(str(e)))
+
+        @R('POST', '/api/v1/me/sso/unlink', 'viewer', summary='Unlink your Authentik account (needs your password)', tags=('me',))
+        def sso_unlink(h, sess):
+            b = h.body(); u = sess['user']
+            if self.throttle.blocked('pw:' + str(u['id'])) > 0: raise ApiError(429, 'Too many wrong passwords. Wait 15 minutes.', retryAfter=LOCK_FOR)
+            if not st.keys.verify_password(b.get('password') or '', u['pw_hash']):
+                self.throttle.fail('pw:' + str(u['id'])); raise ApiError(403, 'Wrong password')
+            st.q('UPDATE users SET oidc_sub=NULL WHERE id=?', u['id']); st.audit(u['username'], h.ip, 'sso.unlinked'); h.send_json(200, {'ok': True})
 
         # ============================================================ me
         @R('GET', '/api/v1/me', 'viewer', summary='The signed-in user', tags=('me',))
@@ -462,12 +499,40 @@ class App:
             meta = dict(st.get_settings().get('sensorMeta', {})); m = dict(meta.get(str(sid), {}))
             if 'name' in b: m['name'] = V.str(40)(b['name']).strip()
             if 'room' in b: m['room'] = V.str(40)(b['room']).strip()
+            if 'type' in b:
+                cur = hub.sensors[sid]
+                if b['type'] not in MANUAL_TYPES: raise ApiError(400, 'Unknown sensor type')
+                if not hub.type_editable(cur): raise ApiError(409, 'The hub reports this sensor\'s type itself')
+                with hub.lock: cur.update(type=b['type'], manual=True); st.save_sensor(sid, cur)
             if b.get('removed') is False: m.pop('removed', None)
             meta[str(sid)] = m; st.save_settings({'sensorMeta': meta}, merge=False)
             if m.get('room'):
                 rooms = list(st.get_settings().get('rooms', []))
                 if m['room'] not in rooms: rooms.append(m['room']); st.save_settings({'rooms': rooms})
             st.audit(sess['user']['username'], h.ip, 'sensor.edit', f'{sid}: {m.get("name")} / {m.get("room")}')
+            v = hub.sensor_view(sid); hub.bus.publish('sensor', v); h.send_json(200, v)
+
+        @R('GET', '/api/v1/sensors/untracked', 'viewer', summary='Devices the hub has reported that aren\'t in the sensor list: ID, type, last heard', tags=('sensors',))
+        def sensors_untracked(h, sess): h.send_json(200, {'devices': hub.untracked_view()})
+
+        @R('POST', '/api/v1/sensors', 'owner', summary='Add a sensor by hand: {"id" (slot), "type", "name", "room"?}. It shows as waiting until the hub reports that slot', tags=('sensors',))
+        def sensor_add(h, sess):
+            b = h.body()
+            try: sid = int(b.get('id'))
+            except (TypeError, ValueError): raise ApiError(400, 'Enter the sensor\'s slot number')
+            if not 1 <= sid <= 999999: raise ApiError(400, 'The slot number is 1 to 999999')
+            kind = b.get('type')
+            if kind not in MANUAL_TYPES: raise ApiError(400, 'Choose the sensor type')
+            name, room = V.str(40)(b.get('name') or '').strip(), V.str(40)(b.get('room') or '').strip()
+            if not name: raise ApiError(400, 'Give the sensor a name')
+            try: hub.add_manual(sid, kind)
+            except ValueError as e: raise ApiError(409, str(e))
+            meta = dict(st.get_settings().get('sensorMeta', {})); meta[str(sid)] = {'name': name, **({'room': room} if room else {})}
+            st.save_settings({'sensorMeta': meta}, merge=False)
+            if room:
+                rooms = list(st.get_settings().get('rooms', []))
+                if room not in rooms: rooms.append(room); st.save_settings({'rooms': rooms})
+            st.audit(sess['user']['username'], h.ip, 'sensor.add', f'{sid}: {name} ({kind})')
             v = hub.sensor_view(sid); hub.bus.publish('sensor', v); h.send_json(200, v)
 
         @R('DELETE', '/api/v1/sensors/{id}', 'owner', summary='Remove a sensor from OpenRoost (the hub keeps it paired)', tags=('sensors',))
@@ -487,6 +552,15 @@ class App:
 
         @R('POST', '/api/v1/pairing/stop', 'owner', summary='Close the pairing window', tags=('sensors',))
         def pairing_stop(h, sess): hub.stop_pairing(); h.send_json(200, hub.pairing_view())
+
+        @R('PATCH', '/api/v1/hub', 'owner', summary='Name the hub or set where it is: {"name", "location"}', tags=('hub',))
+        def hub_edit(h, sess):
+            b = h.body(); patch = {}
+            if 'name' in b: patch['hubName'] = V.str(40)(b['name']).strip() or 'SmartBase'
+            if 'location' in b: patch['hubLoc'] = V.str(80)(b['location']).strip()
+            if patch: st.save_settings(patch)
+            st.audit(sess['user']['username'], h.ip, 'hub.edit', ', '.join(f'{k}={v}' for k, v in patch.items()))
+            v = hub.hub_view(); hub.bus.publish('hub', v); h.send_json(200, v)
 
         @R('POST', '/api/v1/hub/claim', 'owner', summary='Trust the hub that is connected now (others are refused)', tags=('hub',))
         def claim(h, sess):
@@ -515,7 +589,13 @@ class App:
         @R('PUT', '/api/v1/settings', 'owner', summary='Save settings: {"settings": {...}, "clear": [secret names]}', tags=('settings',))
         def settings_put(h, sess):
             b = h.body()
+            before = st.get_settings()
             changed, secs, cleared = st.save_settings(b.get('settings') or {}, b.get('clear') or [])
+            after = st.get_settings()
+            if any(before.get(k) != after.get(k) for k in ('hubIp', 'manageNat')) and self.keep_nat: self.keep_nat()
+            if any(before.get(k) != after.get(k) for k in ('lowBat', 'sensorMissingH', 'hubName', 'hubLoc')):
+                for v in hub.sensors_view(): hub.bus.publish('sensor', v)
+                hub.bus.publish('hub', hub.hub_view())
             st.audit(sess['user']['username'], h.ip, 'settings.save', ', '.join(changed + [s + ' (secret)' for s in secs] + [c + ' (cleared)' for c in cleared]))
             h.send_json(200, {'ok': True, 'secretsSet': st.secrets_set()})
 
@@ -528,7 +608,7 @@ class App:
 
         @R('POST', '/api/v1/services/fix/{fix}', 'owner', summary='Fix a failed check: dns (add Pi-hole records) or nat (add the port redirect)', tags=('services',))
         def svc_fix(h, sess, fix):
-            r = self.fix(fix); st.audit(sess['user']['username'], h.ip, 'services.fix', fix); h.send_json(200, r)
+            r = self.fix(fix, (h.body().get('ip') or '').strip() or None); st.audit(sess['user']['username'], h.ip, 'services.fix', fix); h.send_json(200, r)
 
         @R('POST', '/api/v1/services/pihole/test', 'owner', summary='Test a Pi-hole: {"url", "password"?} (stored password if omitted)', tags=('services',))
         def ph_test(h, sess):
@@ -569,7 +649,8 @@ class App:
             try:
                 cfg = self.oidc.discover(issuer); keys = auth._get_json(cfg['jwks_uri']).get('keys', [])
             except auth.OidcError as e: raise ApiError(400, str(e))
-            h.send_json(200, {'result': f'Found the provider: sign-in, token and {len(keys)} signing key{"s" if len(keys) != 1 else ""}.'})
+            how = f'{len(keys)} signing key{"s" if len(keys) != 1 else ""}' if keys else 'no signing key, so tokens are signed with the client secret (fine; save the client secret)'
+            h.send_json(200, {'result': f'Found the provider: sign-in, token and {how}.'})
 
         @R('GET', '/api/v1/services/bundled', 'owner', summary='Which bundled services (Pi-hole, mail relay) are running', tags=('services',))
         def bundled(h, sess): h.send_json(200, services.bundled())
@@ -585,10 +666,13 @@ class App:
         @R('POST', '/api/v1/notify/matrix/login', 'owner', summary='Sign the Matrix bot in with its password; stores only the access token', tags=('notify',))
         def mx_login(h, sess):
             b = h.body(); s = st.get_settings()
-            try: tok, note = self.notifier.matrix_login(s.get('mxHs', ''), s.get('mxUser', ''), b.get('password') or '')
+            hs, user = (b.get('hs') or s.get('mxHs') or ''), (b.get('user') or s.get('mxUser') or '')
+            V.str(255)(user)
+            if not hs or not user: raise ApiError(400, 'Enter the homeserver and the bot account first')
+            try: tok, note, base = self.notifier.matrix_login(hs, user, b.get('password') or '')
             except NotifyError as e: raise ApiError(400, str(e))
-            st.save_settings({'mxToken': tok}); st.audit(sess['user']['username'], h.ip, 'matrix.login')
-            h.send_json(200, {'ok': True, 'note': note, 'e2ee': self.notifier.crypto.status(), 'secretsSet': st.secrets_set()})
+            st.save_settings({'mxToken': tok, 'mxHs': base, 'mxUser': user}); st.audit(sess['user']['username'], h.ip, 'matrix.login', base)
+            h.send_json(200, {'ok': True, 'note': note, 'hs': base, 'e2ee': self.notifier.crypto.status(), 'secretsSet': st.secrets_set()})
 
         @R('GET', '/api/v1/notify/matrix/e2ee', 'owner', summary='Matrix encryption status: device, cross-signing, its fingerprint', tags=('notify',))
         def mx_e2ee(h, sess): h.send_json(200, self.notifier.crypto.status())
@@ -812,15 +896,22 @@ class App:
         """During setup the chosen Pi-hole isn't saved yet: store it so the checks can use it."""
         self.store.save_settings({'ph': ph}, merge=False)
 
-    def fix(self, what):
+    def fix(self, what, ip=None):
         if what == 'dns':
             try: return {'ok': True, **services.ensure_records(self.store)}
             except ServiceError as e: raise ApiError(400, str(e))
         if what == 'nat':
-            hub_ip = (self.hub.claim() or {}).get('ip') or self.store.get_settings().get('hubIp')
-            if not hub_ip: raise ApiError(409, 'The hub\'s address isn\'t known yet')
-            try: services.nat_add(hub_ip, self.listener_port); return {'ok': True}
+            if ip:
+                try: ipaddress.IPv4Address(ip)
+                except ValueError: raise ApiError(400, 'Enter the hub\'s IPv4 address, e.g. 192.168.1.50')
+                self.store.save_settings({'hubIp': ip})
+            targets = services.hub_targets(self.store, self.hub)
+            if not targets: raise ApiError(409, 'The hub\'s address isn\'t known yet. Enter it (your router\'s device list shows it).')
+            done = []
+            try:
+                for t in targets: done.append((t, services.nat_ensure(t, self.listener_port)))
             except ServiceError as e: raise ApiError(400, str(e))
+            return {'ok': True, 'rules': [{'ip': t, 'result': r} for t, r in done]}
         raise ApiError(404, 'Unknown fix')
 
     def openapi(self):

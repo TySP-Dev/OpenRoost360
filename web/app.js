@@ -5,11 +5,11 @@ let route;
 
 function renderHeader(r) {
   const page = (r && r.page) || (route ? route().page : 'home');
-  document.getElementById('tabs').innerHTML = TABS.map(([id, l, ic]) => `<a href="#${id}" class="${page === id ? 'on' : ''}">${I(ic)}<span>${l}</span></a>`).join('');
+  M.setHTML(document.getElementById('tabs'), TABS.map(([id, l, ic]) => `<a href="#${id}" class="${page === id ? 'on' : ''}">${I(ic)}<span>${l}</span></a>`).join(''));
   const h = S.hub, cls = !h.online ? 'off' : h.pw === 0 || !S.live ? 'warn' : '';
-  document.getElementById('status').innerHTML = `<span class="pill ${cls}"><span class="d"></span>${h.online ? 'Hub online' : h.id ? 'Hub offline' : 'Waiting for hub'}${h.online && h.pw === 0 ? ' · on battery' : ''}${!S.live ? ' · reconnecting' : ''}</span>`;
   const up = S.update && S.update.updateAvailable && M.SV_STATE.role === 'owner';
-  if (up) document.getElementById('status').insertAdjacentHTML('beforeend', ` <a class="pill warn upd" href="#settings/system"><span class="d"></span>Update ${esc(S.update.latest)}</a>`);
+  M.setHTML(document.getElementById('status'), `<span class="pill ${cls}"><span class="d"></span>${h.online ? 'Hub online' : h.id ? 'Hub offline' : 'Waiting for hub'}${h.online && h.pw === 0 ? ' · on battery' : ''}${!S.live ? ' · reconnecting' : ''}</span>`
+    + (up ? ` <a class="pill warn upd" href="#settings/system"><span class="d"></span>Update ${esc(S.update.latest || 'available')}</a>` : ''));
 }
 
 const pages = {
@@ -20,31 +20,40 @@ const pages = {
       <div class="stack"><section class="card h-stat"><div class="stat" id="stat"></div></section><div id="health"></div>
       <section class="card h-act"><div class="eyebrow">${I('list')} Recent activity <a href="#activity">History</a></div><div id="tl"></div></section></div></div>`;
     M.mount(main, () => {
-      main.querySelector('#al').innerHTML = U.alertsHTML();
+      const H = (sel, html) => M.setHTML(main.querySelector(sel), html);
+      H('#al', U.alertsHTML());
       const st = U.stateInfo();
-      main.querySelector('#hero').innerHTML = `${U.ringHTML(st)}<div><h2>${esc(st.title)}</h2><p>${esc(st.sub)}</p>${U.modesHTML()}${U.previewNote()}</div>`;
-      main.querySelector('#rooms').innerHTML = [...S.sensors].sort((a, b) => U.isMissing(b) - U.isMissing(a)).map(s => U.devCard(s)).join('') || '<div class="empty">No sensors yet. They appear as the hub reports them.</div>';
-      const low = S.sensors.filter(s => s.low).length;
-      main.querySelector('#stat').innerHTML = `<div><b>${F.temp(S.hub.temp)}</b><span>Inside</span></div><div><b>${S.hub.hum != null ? S.hub.hum + '%' : '—'}</b><span>Humidity</span></div><div><b style="color:${low ? 'var(--warn)' : 'inherit'}">${low}</b><span>Low batteries</span></div>`;
-      main.querySelector('#health').innerHTML = U.healthHTML();
-      main.querySelector('#tl').innerHTML = U.timeline(S.events.slice(0, 8));
+      H('#hero', `${U.ringHTML(st)}<div><h2>${esc(st.title)}</h2><p>${esc(st.sub)}</p>${U.modesHTML()}${U.previewNote()}</div>`);
+      H('#rooms', U.hubCard() + ([...S.sensors].sort((a, b) => U.isMissing(b) - U.isMissing(a)).map(s => U.devCard(s)).join('') || (S.hub.id ? '' : '<div class="empty">No sensors yet. They appear as the hub reports them.</div>')));
+      const low = S.sensors.filter(U.isLow).length + (S.hub.batLow ? 1 : 0);
+      const leaks = S.sensors.filter(s => s.temp != null && !U.isMissing(s));
+      const where = leaks.length ? `At the hub · sensors ${leaks.map(s => F.temp(s.temp)).join(', ')}` : 'At the hub';
+      H('#stat', `<div title="${esc(where)}"><b>${F.temp(S.hub.temp)}</b><span>Temperature · hub</span></div><div><b>${S.hub.hum != null ? Math.round(S.hub.hum) + '%' : '—'}</b><span>Humidity · hub</span></div><div><b style="color:${low ? 'var(--warn)' : 'inherit'}">${low}</b><span>Low batteries</span></div>`);
+      H('#health', U.healthHTML());
+      H('#tl', U.timeline(S.events.slice(0, 8)));
     });
     U.bindHome(main);
   },
   devices(main) {
-    main.innerHTML = `<section class="card" style="margin-bottom:var(--gap)"><div class="eyebrow">${I('link')} Add a sensor</div><div id="pair"></div></section><div id="byroom" class="stack"></div>`;
+    main.innerHTML = `<section class="card" style="margin-bottom:var(--gap)"><div class="eyebrow">${I('link')} Add a sensor${M.SV_STATE.role === 'owner' ? ' <button type="button" class="btn btn-sm" data-addman>' + I('plus') + ' Add by hand</button>' : ''}</div><div id="pair"></div></section><div id="byroom" class="stack"></div>`;
     M.renderPairing(main.querySelector('#pair'));
     M.mount(main, () => {
       const missing = S.sensors.filter(U.isMissing), groups = {};
       S.sensors.filter(s => !U.isMissing(s)).forEach(s => (groups[s.room || 'No room yet'] ||= []).push(s));
       const card = s => U.devCard(s, { manage: true });
-      main.querySelector('#byroom').innerHTML = (missing.length ? `<section class="card"><div class="eyebrow">${I('alert')} Missing · ${missing.length}</div>
+      M.setHTML(main.querySelector('#byroom'), (S.hub.id ? `<section class="card"><div class="eyebrow">${I('server')} Hub</div><div class="rooms">${U.hubCard({ manage: true })}</div></section>` : '')
+        + (missing.length ? `<section class="card"><div class="eyebrow">${I('alert')} Missing · ${missing.length}</div>
           <div class="missing-note"><span>Not heard from in over ${S.settings.sensorMissingH || 24} h. Try a fresh battery, or remove it if it's gone for good.</span></div>
           <div class="rooms">${missing.map(card).join('')}</div></section>` : '')
-        + Object.entries(groups).map(([room, list]) => `<section class="card"><div class="eyebrow">${esc(room)}</div><div class="rooms">${list.map(card).join('')}</div></section>`).join('')
-        || '<section class="card"><div class="empty">No sensors yet. Sensors already paired with the hub appear when they next report in.</div></section>';
+        + (Object.entries(groups).map(([room, list]) => `<section class="card"><div class="eyebrow">${esc(room)}</div><div class="rooms">${list.map(card).join('')}</div></section>`).join('')
+        || '<section class="card"><div class="empty">No sensors yet. Sensors already paired with the hub appear when they next report in, or add one by hand.</div></section>'));
     });
-    main.addEventListener('click', e => { const r = e.target.closest('[data-rm]'), ed = e.target.closest('[data-edit]'); if (r) M.confirmRemoveSensor(+r.dataset.rm); if (ed) M.sensorDetails(+ed.dataset.edit); });
+    main.addEventListener('click', e => {
+      const r = e.target.closest('[data-rm]'), ed = e.target.closest('[data-edit]');
+      if (r) M.confirmRemoveSensor(+r.dataset.rm); if (ed) M.sensorDetails(+ed.dataset.edit);
+      if (e.target.closest('[data-hubedit]')) M.hubDetails();
+      if (e.target.closest('[data-addman]')) M.addSensorDialog();
+    });
   },
   activity(main) {
     let f = 'all', older = [], done = false; const sets = U.ACTIVITY_SETS;

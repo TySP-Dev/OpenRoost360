@@ -69,6 +69,16 @@
   let emitQueued = false;
   function emit() { if (emitQueued) return; emitQueued = true; requestAnimationFrame(() => { emitQueued = false; subs.forEach(f => { try { f(S); } catch (e) { console.error(e); } }); }); }
   function mount(el, fn) { fn(S); const off = on(st => { if (!document.body.contains(el)) return off(); fn(st); }); return off; }
+  // replace an element's HTML only when it actually changed, keeping open <details> open: live updates re-render often,
+  // and rebuilding identical content made the page jump and dropdowns snap shut
+  function setHTML(el, html) {
+    if (!el || el.__h === html) return false;
+    const open = [...el.querySelectorAll('details')].map(d => d.open);
+    el.__h = html; el.innerHTML = html;
+    el.querySelectorAll('details').forEach((d, i) => { if (open[i]) d.open = true; });
+    return true;
+  }
+  setInterval(() => { if (!document.hidden) emit(); }, 30000);          // keeps "last seen … ago" labels current
 
   // ---------- server API ----------
   const SV_STATE = { user: null, sid: null, role: null, secretsSet: {} };
@@ -94,7 +104,7 @@
   function toHub(h) {
     return { ...h, pw: h.power === 'mains' ? 1 : h.power === 'battery' ? 0 : null, bat: h.backupBatteryMv, ss: h.wifi?.ssid, wc: h.wifi?.channel, rs: h.wifi?.rssi,
       cs: h.cellular ? (h.cellular.signal ?? 99) : null, temp: h.climate?.tempC, hum: h.climate?.humidity, since: h.connectedSince ? h.connectedSince * 1000 : null,
-      lastSeen: h.lastSeen ? h.lastSeen * 1000 : null, bfw: h.firmware?.hub, wfw: h.firmware?.wifi, sfw: h.firmware?.radio, cfw: h.firmware?.modem, hw: h.firmware?.hardware, cv: h.firmware?.certBundle };
+      lastSeen: h.lastSeen ? h.lastSeen * 1000 : null, batPct: h.backupBatteryPct, batLow: h.backupBatteryLow, bfw: h.firmware?.hub, wfw: h.firmware?.wifi, sfw: h.firmware?.radio, cfw: h.firmware?.modem, hw: h.firmware?.hardware, cv: h.firmware?.certBundle };
   }
   function applyArm(a) {
     S.as = a.state ?? null;
@@ -190,6 +200,8 @@
   function fmtDate(t) { const d = new Date(t); const today = new Date(); return d.toDateString() === today.toDateString() ? 'Today' : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); }
   function ago(t) { if (!t) return 'never'; const s = Math.round((now() - t) / 1000); if (s < 10) return 'just now'; if (s < 60) return s + 's ago'; if (s < 3600) return Math.round(s / 60) + 'm ago'; if (s < 86400) return Math.round(s / 3600) + 'h ago'; return Math.round(s / 86400) + 'd ago'; }
   const batPct = s => s.pct ?? 0;
+  const lowLimit = () => +S.settings.lowBat || 35;
+  const isLow = s => s.pct != null && s.pct <= lowLimit();      // follows the setting at once, without waiting for the server
   const bars = rs => rs == null ? 0 : rs > -55 ? 4 : rs > -65 ? 3 : rs > -75 ? 2 : 1;
   function temp(c) { if (c == null) return '—'; return S.settings.tempUnit === 'C' ? (+c).toFixed(1) + '°C' : (c * 9 / 5 + 32).toFixed(0) + '°F'; }
   function remaining() { return S.countdown ? Math.max(0, Math.ceil((S.countdown.ends - now()) / 1000)) : 0; }
@@ -234,9 +246,10 @@
       <div class="sd-sec">Name &amp; location</div>
       <label class="sd-f"><span>Name</span><input class="in" name="n" value="${esc(s.rawName || '')}" placeholder="${esc(s.name)}" required maxlength="40"></label>
       <label class="sd-f"><span>Room</span><div class="combo"><input class="in" name="r" value="${esc(s.room || '')}" placeholder="Room — search or create" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Room"><ul class="combo-list" role="listbox" hidden></ul></div></label>
+      ${s.typeEditable && isOwner() ? `<label class="sd-f"><span>Type</span><select class="in" name="t">${ADD_TYPES.map(([v, l]) => `<option value="${v}"${v === s.type ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}
       <div class="sd-sec">Status</div>
       <dl class="kv">
-        ${row('Status', miss ? '<span class="sd-pill warn">Missing</span>' : `<span class="sd-pill">${esc(sensorState(s))}</span>`)}
+        ${row('Status', miss ? '<span class="sd-pill warn">Missing</span>' : s.waiting ? '<span class="sd-pill warn">Waiting for the hub to report it</span>' : `<span class="sd-pill">${esc(sensorState(s))}</span>`)}
         ${row('Last check-in', `${ago(s.last)} · ${esc(when)}`)}
         ${row('Battery', s.pct == null ? '—' : `${s.pct}% <span class="sd-raw">(${s.bat})</span>`, 'bat')}
         ${row('Signal at hub', `${sig} <span class="sd-raw">(${s.rs ?? '—'} dBm)</span>`, 'rs')}
@@ -263,7 +276,10 @@
     form.querySelector('[data-remove]')?.addEventListener('click', () => { close(); confirmRemoveSensor(id); });
     form.addEventListener('submit', async e => {
       e.preventDefault();
-      try { const v = await renameSensor(id, form.n.value.trim(), form.r.value.trim()); toast(`Saved ${esc(v.displayName)}`); close(); }
+      try {
+        if (form.t && form.t.value !== s.type) upsertSensor(await api('PATCH', '/sensors/' + id, { type: form.t.value }));
+        const v = await renameSensor(id, form.n.value.trim(), form.r.value.trim()); toast(`Saved ${esc(v.displayName)}`); close();
+      }
       catch (err) { toast(esc(err.message), 'err'); }
     });
     if (isOwner() && !matchMedia('(pointer: coarse)').matches) { form.n.focus(); form.n.select(); } else form.querySelector('.sd-x').focus({ preventScroll: true });
@@ -543,7 +559,7 @@
         { title: 'Behaviour', fields: [
           { k: 'duressSilent', label: 'Silent duress', type: 'toggle', def: true, help: 'Hostage-PIN disarms alert your contacts but never show on screens inside the home.' },
           { k: 'repeatMin', label: 'Repeat alarm notifications', type: 'number', min: 0, max: 60, unit: 'min', def: 5, help: 'Re-send until someone acknowledges. 0 = once.' },
-          { k: 'lowBat', label: 'Low-battery warning', type: 'range', min: 5, max: 50, step: 5, unit: '%', def: 20 },
+          { k: 'lowBat', label: 'Low-battery warning', type: 'range', min: 5, max: 50, step: 5, unit: '%', def: 35, help: 'A battery at or below this counts as low (Home → Low batteries) and you get a warning.' },
           { k: 'offlineMin', label: 'Hub offline alert after', type: 'number', min: 1, max: 120, unit: 'min', def: 10 },
           { k: 'sensorMissingH', label: 'Mark a sensor missing after', type: 'number', min: 2, max: 168, unit: 'h', def: 24, help: 'Sensors check in on their own. One that stays quiet this long is shown as Missing.' },
           { k: 'quiet', label: 'Quiet hours for non-urgent events', type: 'text', def: '22:00–07:00', help: 'Alarms, fire, panic, leak and duress ignore quiet hours. Uses the time zone under Appearance.' } ] },
@@ -567,6 +583,7 @@
           { k: 'pwNew', label: 'New password', type: 'password', nosave: true, def: '', help: 'At least 12 characters.' },
           { k: 'pwNew2', label: 'Confirm new password', type: 'password', nosave: true, def: '' } ], actions: [{ label: 'Change password', act: 'changePass', keep: true }] },
         { title: 'Two-factor sign-in', fields: [{ type: 'custom', render: 'totp' }] },
+        { title: 'Your Authentik account', fields: [{ type: 'custom', render: 'ssolink' }] },
         { title: 'Sign-in', fields: [
           { k: 'sessionLen', label: 'Stay signed in for', type: 'select', opts: [['12h', '12 hours'], ['1d', '1 day'], ['7d', '7 days'], ['30d', '30 days']], def: '12h', help: 'Without “Keep me signed in”. Ticking it at sign-in keeps you in for 30 days.' },
           { k: 'proxyAuth', label: 'Trust a reverse-proxy sign-in header', type: 'toggle', def: false, help: 'For an Authentik proxy outpost or similar. Only requests from the addresses below are trusted.' },
@@ -721,14 +738,20 @@
           : f.planned && isPlanned(f.planned) ? `<div class="f-planned"${plannedAttrs(f.planned)}>${fieldHTML(f, S.settings[f.k])}</div>` : fieldHTML(f, S.settings[f.k])).join('')}</div>
         ${g.actions ? `<div class="group-actions">${g.actions.map(a => `<button type="button" class="btn${a.kind === 'danger' ? ' btn-danger' : ''}" data-act="${a.act}"${a.keep ? ' data-keep' : ''}>${a.label}</button>`).join('')}</div>` : ''}</section>`;
       }).join('')}
-      ${secPlanned ? '' : `<div class="save-bar"><span class="save-hint">Saved on the OpenRoost server</span>
-        <button type="button" class="btn" data-revert>Revert</button><button type="button" class="btn btn-primary" data-save>Save changes</button></div>`}`;
+      ${secPlanned ? '' : `<div class="save-bar" hidden><button type="button" class="btn" data-revert>Revert</button><button type="button" class="btn btn-primary" data-save>Save</button></div>`}`;
     el.querySelectorAll('[data-planned] input, [data-planned] select, [data-planned] textarea, [data-planned] button').forEach(i => { i.disabled = true; i.tabIndex = -1; });
     el.querySelectorAll('[data-custom]').forEach(c => CUSTOM[c.dataset.custom](c));
     el.querySelectorAll('.rng input').forEach(r => r.addEventListener('input', () => { r.nextElementSibling.textContent = r.value + ' ' + (sec.groups.flatMap(g => g.fields).find(f => f.k === r.dataset.k)?.unit || ''); }));
     el.querySelectorAll('.swatches').forEach(w => w.addEventListener('click', e => { const b = e.target.closest('.swatch'); if (!b) return; w.querySelector('input').value = b.dataset.v; w.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === b)); }));
     el.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => ACTIONS[b.dataset.act](b, el)));
-    el.querySelector('[data-revert]')?.addEventListener('click', () => { renderSettings(el, secId); toast('Reverted', 'info'); });
+    // the Save / Revert bar only shows once something on this page differs from what's saved
+    const formState = () => JSON.stringify([[...el.querySelectorAll('[data-k]:not([data-nosave])')].filter(i => !i.closest('[data-planned]')).map(i => i.type === 'radio' || i.type === 'checkbox' ? i.checked : i.value),
+      [...el.querySelectorAll('[data-mx]')].map(i => i.checked), stripPrivate(S.contacts), stripPrivate(S.settings.esc || {})]);
+    const orig = { form: formState(), contacts: clone(S.contacts), esc: clone(S.settings.esc || {}) };
+    const bar = el.querySelector('.save-bar');
+    const dirtyCheck = () => { if (bar && document.contains(bar)) bar.hidden = formState() === orig.form; };
+    ['input', 'change', 'click', 'submit'].forEach(t => el.addEventListener(t, () => setTimeout(dirtyCheck, 0)));
+    el.querySelector('[data-revert]')?.addEventListener('click', () => { S.contacts = orig.contacts; S.settings.esc = orig.esc; renderSettings(el, secId); toast('Reverted', 'info'); });
     el.querySelector('[data-save]')?.addEventListener('click', () => {
       el.querySelectorAll('[data-k]:not([data-nosave])').forEach(i => {
         if (i.closest('[data-planned]')) return;
@@ -742,7 +765,7 @@
       persist().then(() => { applyLook(); emit(); renderSettings(el, secId); toast('Settings saved'); }, () => { saveBtn.disabled = false; });
     });
     if (!isOwner()) {
-      el.querySelector('.save-bar')?.remove(); el.querySelectorAll('input,select,textarea,.btn:not([data-keep])').forEach(i => { if (!i.closest('[data-custom=profile],[data-custom=totp],[data-custom=sessions]')) i.disabled = true; });
+      el.querySelector('.save-bar')?.remove(); el.querySelectorAll('input,select,textarea,.btn:not([data-keep])').forEach(i => { if (!i.closest('[data-custom=profile],[data-custom=totp],[data-custom=sessions],[data-custom=ssolink]')) i.disabled = true; });
       el.querySelector('.sec-head').insertAdjacentHTML('afterend', `<div class="note">${icon('lock')} <span>Only owners can change these settings. You're signed in as a ${esc(SV_STATE.role)}.</span></div>`);
     }
   }
@@ -761,9 +784,9 @@
     alertmodes(el) {
       const cols = [[1, 'Always'], [2, 'Home'], [4, 'Away']];
       mount(el, () => {
-        el.innerHTML = `<div class="f-help" style="margin-bottom:.5rem">Which arm states make each sensor trigger, as reported by the hub (<code>dj.as</code>: 1 = always, 2 = Home, 4 = Away).</div>
+        setHTML(el, `<div class="f-help" style="margin-bottom:.5rem">Which arm states make each sensor trigger, as reported by the hub (<code>dj.as</code>: 1 = always, 2 = Home, 4 = Away).</div>
           <div class="mx-wrap"${plannedAttrs('sensors.alertMode')}><table class="mx"><thead><tr><th>Sensor</th>${cols.map(c => `<th>${c[1]}</th>`).join('')}</tr></thead><tbody>
-          ${S.sensors.map(s => `<tr><td>${icon(TYPE_ICON[s.type] || 'chip')} ${esc(s.name)}</td>${cols.map(([b]) => `<td><input type="checkbox" disabled${s.as & b ? ' checked' : ''} aria-label="${esc(s.name)} ${b}"></td>`).join('')}</tr>`).join('') || '<tr><td colspan="4" class="f-help">No sensors yet.</td></tr>'}</tbody></table></div>`;
+          ${S.sensors.map(s => `<tr><td>${icon(TYPE_ICON[s.type] || 'chip')} ${esc(s.name)}</td>${cols.map(([b]) => `<td><input type="checkbox" disabled${s.as & b ? ' checked' : ''} aria-label="${esc(s.name)} ${b}"></td>`).join('')}</tr>`).join('') || '<tr><td colspan="4" class="f-help">No sensors yet.</td></tr>'}</tbody></table></div>`);
       });
     },
     matrix(el) {
@@ -779,9 +802,14 @@
       el.querySelector('[data-mxl]').addEventListener('submit', async e => {
         e.preventDefault(); const f = e.target;
         try {
-          if (!S.settings.mxHs || !S.settings.mxUser) throw new Error('Save the homeserver and bot account first');
-          const r = await api('POST', '/notify/matrix/login', { password: f.elements.p.value }); SV_STATE.secretsSet = r.secretsSet; f.reset(); CUSTOM.mxlogin(el);
-          toast(r.note ? 'Bot signed in. ' + esc(r.note) : 'Bot signed in, encryption keys set up', r.note ? 'warn' : 'ok', r.note ? 9000 : 3000);
+          const sec = el.closest('#set') || document, hs = sec.querySelector('[data-k="mxHs"]')?.value.trim() || S.settings.mxHs, user = sec.querySelector('[data-k="mxUser"]')?.value.trim() || S.settings.mxUser;
+          if (!hs || !user) throw new Error('Enter the homeserver and bot account first');
+          const r = await api('POST', '/notify/matrix/login', { password: f.elements.p.value, hs, user }); SV_STATE.secretsSet = r.secretsSet; f.reset();
+          S.settings.mxHs = r.hs; S.settings.mxUser = user;
+          const hsIn = sec.querySelector('[data-k="mxHs"]'); if (hsIn) { hsIn.value = r.hs; hsIn.dispatchEvent(new Event('input', { bubbles: true })); }
+          CUSTOM.mxlogin(el);
+          const moved = r.hs.replace(/\/$/, '') !== hs.replace(/\/$/, '') ? ` Your server's Matrix API is at ${esc(r.hs)} (found through ${esc(hs)}/.well-known).` : '';
+          toast((r.note ? 'Bot signed in. ' + esc(r.note) : 'Bot signed in, encryption keys set up.') + moved, r.note ? 'warn' : 'ok', r.note || moved ? 9000 : 3000);
           document.querySelectorAll('[data-mxe2ee]').forEach(x => CUSTOM.mxe2ee(x));
         } catch (err) { toast(esc(err.message), 'err', 6000); }
       });
@@ -810,7 +838,7 @@
     },
     totp(el) {
       const u = SV_STATE.user;
-      if (u.sso) { el.innerHTML = '<div class="f-help">You sign in through Authentik, which handles two-factor for you.</div>'; return; }
+      if (u.sso) { el.innerHTML = '<div class="f-help">Your account is linked to Authentik: set up two-factor there. (A code set up here still applies to password sign-in.)</div>'; if (!u.totp) return; }
       if (u.totp) {
         el.innerHTML = `<div class="su-chk ok su-chk-tight"><span class="st">${icon('check')}</span><div><b>On</b><small>Sign-in asks for a code from your authenticator app.</small></div></div>
           <form class="su-row" data-off><input class="in" type="password" name="p" placeholder="Your password" required autocomplete="current-password" data-nosave style="flex:1;min-width:140px"><button class="btn btn-sm btn-danger" data-keep>Turn off</button></form>`;
@@ -914,14 +942,14 @@
     hubinfo(el) {
       mount(el, () => {
         const h = S.hub;
-        if (!h.id) { el.innerHTML = '<div class="f-help">No hub has connected yet.</div>'; return; }
-        const rows = [['Status', h.online ? `Online · connected ${uptime()}` : `Offline · last seen ${ago(h.lastSeen)}`, ''], ['Device id', 'z••••••••' + h.id.slice(-4), 'id'], ['Address', h.ip || '—', ''],
+        if (!h.id) { setHTML(el, '<div class="f-help">No hub has connected yet.</div>'); return; }
+        const rows = [['Status', h.online ? (h.since ? `Online · connected ${uptime()}` : `Online · last heard ${ago(h.lastSeen)}`) : `Offline · last seen ${ago(h.lastSeen)}`, ''], ['Device id', 'z••••••••' + h.id.slice(-4), 'id'], ['Address', h.ip || '—', ''],
           ['Claimed', h.claimed ? (h.claimed === h.id ? 'Yes — other devices are refused' : 'A different hub is claimed') : 'Not yet', ''], ['Power', h.pw == null ? '—' : h.pw ? 'Mains' : 'Battery (events wait until it reconnects)', 'pw'],
-          ['Backup battery', h.bat != null ? h.bat + ' mV' : '—', 'bat'], ['Wi-Fi', h.ss != null ? `${h.ss} · ch ${h.wc} · ${h.rs} dBm` : '—', 'ss/wc/rs'], ['Cellular', h.cs == null ? '—' : h.cs === 99 ? 'No signal / no plan' : h.cs, 'cs'],
+          ['Backup battery', h.bat != null ? `about ${h.batPct}% (${h.bat} mV)` : '—', 'bat'], ['Wi-Fi', h.ss != null ? `${h.ss} · ch ${h.wc} · ${h.rs} dBm` : '—', 'ss/wc/rs'], ['Cellular', h.cs == null ? '—' : h.cs === 99 ? 'No signal / no plan' : h.cs, 'cs'],
           ['Climate', h.temp != null ? `${temp(h.temp)} · ${h.hum}%` : '—', 'cl'], ['Hub firmware', h.bfw || '—', 'bfw'], ['Wi-Fi module', h.wfw || '—', 'wfw'], ['Sub-GHz radio', h.sfw || '—', 'sfw'],
           ['LTE modem', h.cfw || '—', 'cfw'], ['Hardware', h.hw || '—', 'hw'], ['Cert bundle', h.cv || '—', 'cv']];
-        el.innerHTML = `<dl class="kv">${rows.map(([k, v, c]) => `<div><dt>${k}${c ? ` <code class="code">${c}</code>` : ''}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-          ${isOwner() && h.id && h.claimed !== h.id ? `<div class="group-actions"><button type="button" class="btn btn-sm" data-claim>Trust this hub</button></div>` : ''}`;
+        if (!setHTML(el, `<dl class="kv">${rows.map(([k, v, c]) => `<div><dt>${k}${c ? ` <code class="code">${c}</code>` : ''}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+          ${isOwner() && h.id && h.claimed !== h.id ? `<div class="group-actions"><button type="button" class="btn btn-sm" data-claim>Trust this hub</button></div>` : ''}`)) return;
         el.querySelector('[data-claim]')?.addEventListener('click', async () => { try { S.hub = toHub(await api('POST', '/hub/claim')); emit(); toast('Hub trusted. Other devices claiming to be a hub are refused.'); } catch (e) { toast(esc(e.message), 'err'); } });
       });
     },
@@ -987,24 +1015,54 @@
       draw();
     },
     ssoinfo(el) {
-      const cb = location.origin + '/api/v1/auth/oidc/callback';
+      const pub = (S.settings.publicUrl || '').replace(/\/+$/, '');
+      let base = location.origin;
+      try { if (pub && new URL(pub).host === location.host) base = pub; } catch (e) { /* not a URL */ }
+      const cb = base + '/api/v1/auth/oidc/callback';
       el.innerHTML = `<div class="sso-box"><div class="f-label">Redirect URI</div><div class="copy"><code>${esc(cb)}</code><button type="button" class="btn btn-icon" data-copy title="Copy" data-keep>${icon('link')}</button></div>
+        <div class="f-help">Authentik must have exactly this address. Open OpenRoost by the address you'll use with Authentik (e.g. <code>https://openroost.example.com</code>) before copying it, and list that name in <code>OPENROOST_HOSTS</code> in <code>.env</code>.</div>
         <details><summary>Authentik setup (2 minutes)</summary><ol class="steps">
-          <li><b>Applications → Providers → Create → OAuth2/OpenID Provider.</b> Client type <i>Confidential</i>, paste the redirect URI above, pick a signing key.</li>
+          <li><b>Applications → Providers → Create → OAuth2/OpenID Provider.</b> Client type <i>Confidential</i>, redirect URI <i>Strict</i> with the address above. A signing key is optional (without one Authentik signs with the client secret; both work).</li>
           <li><b>Applications → Create</b>: name “OpenRoost”, link the provider.</li>
-          <li>Copy the <b>Client ID</b>, <b>Client secret</b> and issuer URL into the fields here.</li>
-          <li>Create groups <code>openroost-admins</code> / <code>openroost-members</code> and add your family.</li>
-          <li>Press <b>Test connection</b>, save, then try it from a private window before turning off password sign-in.</li></ol></details></div>`;
+          <li>Copy the <b>Client ID</b>, <b>Client secret</b> and the <b>OpenID Configuration Issuer</b> (ends in <code>/application/o/&lt;slug&gt;/</code>) into the fields here.</li>
+          <li>Create groups <code>openroost-admins</code> / <code>openroost-members</code> and add your family. People in neither group get a viewer account.</li>
+          <li>Press <b>Test connection</b>, save, then sign in with your password and use <b>Link Authentik</b> (Account → Your Authentik account) so your existing owner account is the one Authentik signs into.</li>
+          <li>Try it from a private window before turning off password sign-in.</li></ol></details></div>`;
       el.querySelector('[data-copy]').addEventListener('click', () => { try { navigator.clipboard.writeText(cb); } catch (e) { /* ignore */ } toast('Redirect URI copied'); });
     },
+    ssolink(el) {
+      const u = SV_STATE.user;
+      api('GET', '/status').then(st => {
+        if (u.sso) {
+          el.innerHTML = `<div class="su-chk ok su-chk-tight"><span class="st">${icon('check')}</span><div><b>Linked</b><small>“${esc(st.sso.button)}” signs you into this account.</small></div></div>
+            <form class="su-row" data-unl><input class="in" type="password" name="p" placeholder="Your OpenRoost password" required autocomplete="current-password" data-nosave style="flex:1;min-width:140px"><button class="btn btn-sm btn-danger" data-keep>Unlink</button></form>`;
+          el.querySelector('[data-unl]').addEventListener('submit', async e => {
+            e.preventDefault();
+            try { await api('POST', '/me/sso/unlink', { password: e.target.elements.p.value }); SV_STATE.user = (await api('GET', '/me')).user; CUSTOM.ssolink(el); toast('Authentik unlinked'); }
+            catch (err) { toast(esc(err.message), 'err'); }
+          });
+        } else if (st.sso.on) {
+          el.innerHTML = `<div class="f-help">Link your Authentik user to this account, so signing in with Authentik opens <b>this</b> account (with its role) instead of creating a new one.</div>
+            <div class="group-actions"><a class="btn" href="/api/v1/auth/oidc/start?link=1" data-keep>${icon('shield')} Link Authentik</a></div>`;
+        } else el.innerHTML = '<div class="f-help">Turn on single sign-on below (owners), then link your Authentik user here.</div>';
+      }).catch(err => { el.innerHTML = `<div class="f-help">${esc(err.message)}</div>`; });
+    },
     redirect(el) {
+      let last = null;
       const draw = (checks, busyNow) => {
         const bad = checks ? checks.filter(c => c.status === 'fail').length : 0;
-        el.innerHTML = `<div class="chk-head">${busyNow ? '<span class="spin"></span><b>Checking…</b>' : bad ? `<span class="dot dot-fail"></span><b>${bad} problem${bad > 1 ? 's' : ''}</b>` : '<span class="dot dot-ok"></span><b>Hub traffic reaches this server</b>'}
+        const nat = (checks || []).find(c => c.id === 'nat'), askIp = isOwner() && nat && nat.status !== 'ok';
+        const html = `<div class="chk-head">${busyNow ? '<span class="spin"></span><b>Checking…</b>' : bad ? `<span class="dot dot-fail"></span><b>${bad} problem${bad > 1 ? 's' : ''}</b>` : '<span class="dot dot-ok"></span><b>Hub traffic reaches this server</b>'}
           <button type="button" class="btn" data-run data-keep ${busyNow ? 'disabled' : ''}>Run checks</button></div>
           <div class="chks">${(checks || []).map(c => `<div class="chk"${c.status === 'planned' ? plannedAttrs('pihole.bundled') : ''}><span class="dot dot-${{ ok: 'ok', fail: 'fail', unknown: 'warn', wait: 'idle', planned: 'idle' }[c.status] || 'idle'}"></span>
-            <div><div class="chk-l">${esc(c.title)}</div><div class="f-help">${esc(c.detail)}</div></div>${c.fix && isOwner() ? `<button type="button" class="btn" data-fix="${c.fix}" data-keep>Fix</button>` : '<span></span>'}</div>`).join('')}</div>`;
+            <div><div class="chk-l">${esc(c.title)}</div><div class="f-help">${esc(c.detail)}</div></div>${c.fix && isOwner() ? `<button type="button" class="btn" data-fix="${c.fix}" data-keep>Fix</button>` : '<span></span>'}</div>`).join('')}</div>
+          ${askIp ? `<form class="su-row nat-ip" data-natf><input class="in" name="ip" inputmode="decimal" placeholder="Hub IP, e.g. 192.168.1.50" value="${esc(S.settings.hubIp || '')}" pattern="\\d{1,3}(\\.\\d{1,3}){3}" required data-nosave aria-label="The hub's IP address" style="flex:1;min-width:160px"><button class="btn btn-primary" data-keep>Add the redirect</button></form>
+            <div class="f-help">The hub connects to port 443; this rule sends that to OpenRoost's listener. Find the hub's address in your router's device list (give it a DHCP reservation). OpenRoost keeps the rule in place from then on.</div>` : ''}`;
+        el.innerHTML = html;
         el.querySelector('[data-run]').addEventListener('click', run);
+        el.querySelector('[data-natf]')?.addEventListener('submit', e => { e.preventDefault(); const b = e.target.querySelector('button'); busy(b, async () => {
+          try { await api('POST', '/services/fix/nat', { ip: e.target.elements.ip.value.trim() }); S.settings.hubIp = e.target.elements.ip.value.trim(); toast('Port redirect added'); run(); } catch (err) { toast(esc(err.message), 'err', 6000); }
+        }); });
         el.querySelectorAll('[data-fix]').forEach(b => b.addEventListener('click', () => busy(b, async () => {
           try {
             const r = await api('POST', '/services/fix/' + b.dataset.fix);
@@ -1015,8 +1073,8 @@
       };
       async function run() {
         if (!isOwner()) { el.innerHTML = '<div class="f-help">Only owners can run the checks.</div>'; return; }
-        draw(null, true);
-        try { draw((await api('GET', '/services/checks')).checks, false); } catch (e) { el.innerHTML = `<div class="f-help">${esc(e.message)}</div>`; }
+        draw(last, true);                                  // keep the old results while checking: the page doesn't jump
+        try { last = (await api('GET', '/services/checks')).checks; draw(last, false); } catch (e) { el.innerHTML = `<div class="f-help">${esc(e.message)}</div>`; }
       }
       run();
     },
@@ -1053,9 +1111,10 @@
         const how = u.docker ? `<code>./update.sh</code> in the OpenRoost folder on the server (pulls the new release and rebuilds the container). Your data and settings are kept.`
           : 'Pull the new release with <code>git pull</code> and restart OpenRoost.';
         el.innerHTML = `<dl class="kv"><div><dt>This server</dt><dd>${esc(u.version)}${u.commit ? ` <span class="sd-raw">(${esc(u.commit)})</span>` : ''}${u.docker ? ' · Docker' : ''}</dd></div>
-          <div><dt>Newest release</dt><dd>${u.latest ? esc(u.latest) : '—'}</dd></div><div><dt>Last checked</dt><dd>${u.checked ? ago(u.checked * 1000) : 'never'}</dd></div></dl>
-          ${u.updateAvailable ? `<div class="note note-blocked">${icon('alert')} <span><b>Update available: ${esc(u.latest)}.</b> ${u.releaseUrl ? `<a href="${esc(u.releaseUrl)}" target="_blank" rel="noopener noreferrer">What's new</a>. ` : ''}To update, run ${how}</span></div>`
-            : u.latest ? `<div class="f-help">${icon('check')} You're on the newest release.</div>` : ''}
+          <div><dt>Newest release</dt><dd>${u.latest ? esc(u.latest) : u.onMain ? 'none published yet' : '—'}</dd></div><div><dt>Last checked</dt><dd>${u.checked ? ago(u.checked * 1000) : 'never'}</dd></div>${u.onMain ? `<div><dt>Newest commit on main</dt><dd><code>${esc(u.mainCommit || '—')}</code></dd></div>` : ''}</dl>
+          ${u.updateAvailable ? `<div class="note note-blocked">${icon('alert')} <span><b>Update available: ${esc(u.latest || 'newer commits on main')}.</b> ${u.releaseUrl ? `<a href="${esc(u.releaseUrl)}" target="_blank" rel="noopener noreferrer">What's new</a>. ` : ''}To update, run ${u.onMain && u.docker ? '<code>./update.sh main</code> in the OpenRoost folder on the server. Your data and settings are kept (and the database is copied to <code>data/backups/</code> first).' : how}</span></div>`
+            : u.latest ? `<div class="f-help">${icon('check')} You're on the newest release.</div>` : u.onMain ? `<div class="f-help">${icon('check')} You're on the newest commit.</div>` : ''}
+          ${u.note ? `<div class="f-help">${esc(u.note)} Releases are git tags named like <code>v0.2.0</code>: the project owner publishes one with <code>git tag v0.2.0 &amp;&amp; git push origin v0.2.0</code>.</div>` : ''}
           ${u.error ? `<div class="f-help err-t">${esc(u.error)}</div>` : ''}
           ${isOwner() ? '<div class="group-actions"><button type="button" class="btn" data-chk data-keep>Check now</button></div>' : ''}`;
         el.querySelector('[data-chk]')?.addEventListener('click', e => busy(e.currentTarget, async () => {
@@ -1322,13 +1381,14 @@
     if (!S.live) p.push('Live updates paused — reconnecting');
     if (!S.hub.id) p.push('No hub has connected yet');
     else if (!S.hub.online) p.push(S.hub.pw === 0 ? `Hub on battery · last seen ${ago(S.hub.lastSeen)}` : `Hub not connected · last seen ${ago(S.hub.lastSeen)}`);
+    else if (S.hub.pw === 0) p.push(`Hub on battery: events arrive when it reconnects · last seen ${ago(S.hub.lastSeen)}`);
     return { ok: !p.length, problems: p };
   }
-  function healthHTML() { const h = health(); return `<a class="health ${h.ok ? 'ok' : 'bad'}" href="#settings/hub"><span class="hd"></span><span class="ht"><b>${h.ok ? 'Cloud stand-in working' : 'Cloud stand-in needs attention'}</b><small>${h.ok ? `Hub connected for ${uptime()} · events arrive live` : esc(h.problems.join(' · '))}</small></span>${icon('server')}</a>`; }
+  function healthHTML() { const h = health(); return `<a class="health ${h.ok ? 'ok' : 'bad'}" href="#settings/hub"><span class="hd"></span><span class="ht"><b>${h.ok ? 'Cloud stand-in working' : 'Cloud stand-in needs attention'}</b><small>${h.ok ? (S.hub.since ? `Hub connected for ${uptime()} · events arrive live` : `Hub last heard ${ago(S.hub.lastSeen)} · events arrive live`) : esc(h.problems.join(' · '))}</small></span>${icon('server')}</a>`; }
   function stateInfo() {
     const alarm = S.alerts.find(a => a.active && ['intrusion', 'panic', 'fire'].includes(a.kind)), c = S.countdown, rem = remaining();
     const live = S.sensors, gone = live.filter(isMissing).length, on = live.length - gone;
-    const climate = S.hub.temp != null ? ` · ${temp(S.hub.temp)} inside · ${S.hub.hum}% humidity` : '';
+    const climate = S.hub.temp != null ? ` · ${temp(S.hub.temp)} and ${Math.round(S.hub.hum)}% humidity at the hub` : '';
     if (alarm) return { key: 'alarm', cls: 's-alarm', lbl: 'Alarm', hint: 'Disarm at the keypad', title: alarm.title, sub: alarm.detail, p: 100 };
     if (c) return { key: c.kind, cls: 's-pending', lbl: `${rem}s`, hint: c.kind === 'exit' ? 'Arming Away' : 'Entry delay', title: c.kind === 'exit' ? 'Time to head out' : 'Someone came in', sub: c.kind === 'exit' ? 'The system arms when the countdown ends.' : 'Disarm at the keypad before the countdown ends.', p: Math.max(0, Math.min(100, rem / (c.total || 60) * 100)) };
     if (S.as == null) return { key: 'none', cls: 's-pending', lbl: 'Waiting', hint: '', title: 'Waiting for the hub', sub: 'The SmartBase hasn\'t reported its state yet.', p: 0 };
@@ -1351,15 +1411,117 @@
     });
   }
   function devCard(s, opts = {}) {
-    const p = batPct(s), low = s.low, miss = isMissing(s);
-    const cls = miss ? 'missing' : s.state === 'wet' ? 'crit' : isAlertState(s) ? 'hot' : '';
-    const meta = miss ? `<span>Last heard ${ago(s.last)}</span>`
+    const p = batPct(s), low = isLow(s), miss = isMissing(s), wait = !!s.waiting;
+    const cls = miss ? 'missing' : wait ? 'waiting' : s.state === 'wet' ? 'crit' : isAlertState(s) ? 'hot' : '';
+    const meta = miss ? `<span>Last heard ${ago(s.last)}</span>` : wait ? '<span>Added by hand · not heard from yet</span>'
       : `<span class="batt ${low ? 'low' : ''}">${icon('battery')} ${s.pct == null ? '—' : p + '%'}</span><span>${icon('wifi')} ${['—', 'weak', 'fair', 'good', 'great'][bars(s.rs)]}</span>`;
-    const state = miss ? 'Missing' : sensorState(s) + (s.temp != null && s.type === 'leak' ? ` · ${temp(s.temp)}` : '');
+    const climate = s.temp != null ? ` · ${temp(s.temp)}${s.hum != null ? ' · ' + Math.round(s.hum) + '%' : ''}` : '';
+    const state = miss ? 'Missing' : wait ? 'Waiting' : sensorState(s) + climate;
     const act = opts.manage ? `<div class="dev-act"><button type="button" class="btn btn-sm dev-edit" data-edit="${s.id}" aria-label="${isOwner() ? 'Edit' : 'Details for'} ${esc(s.name)}">${icon(isOwner() ? 'edit' : 'eye')} ${isOwner() ? 'Edit' : 'Details'}</button>${isOwner() ? `<button type="button" class="btn btn-sm btn-icon${miss ? ' dev-rm-strong' : ' dev-rm'}" data-rm="${s.id}" title="Remove ${esc(s.name)}" aria-label="Remove ${esc(s.name)}">${icon('trash')}</button>` : ''}</div>` : '';
-    return `<div class="dev ${cls}${s.named ? '' : ' unnamed'}"><div class="top"><span class="ico">${icon(TYPE_ICON[s.type] || 'chip')}</span><span class="state">${esc(state)}</span></div>
+    return `<div class="dev ${cls}${s.named ? '' : ' unnamed'}"><div class="top"><span class="ico">${icon(TYPE_ICON[s.type] || 'chip')}</span><span class="state" title="${esc(state)}">${esc(state)}</span></div>
       <div class="name" title="${esc(s.name)}">${esc(s.name)}</div><div class="room">${esc(s.room || s.typeLabel)}</div>
       <div class="meta">${meta}</div>${act}</div>`;
+  }
+  // the SmartBase itself: power, backup battery, connection. Shown first on Home and Devices.
+  function hubPower(h) { return h.pw == null ? '—' : h.pw ? 'Plugged in' : 'On battery'; }
+  function hubCard(opts = {}) {
+    const h = S.hub;
+    if (!h.id) return '';
+    const off = !h.online, onBat = h.pw === 0;
+    const cls = off ? 'missing' : onBat ? 'hot' : '';
+    const state = off ? 'Offline' : onBat ? 'On battery' : 'Plugged in';
+    const bat = h.batPct != null ? `<span class="batt ${h.batLow ? 'low' : ''}" title="Backup battery ${h.bat} mV">${icon('battery')} ${h.batPct}%</span>` : '';
+    const meta = off ? `<span>Last heard ${ago(h.lastSeen)}</span>` : `<span>${icon('power')} ${hubPower(h)}</span>${bat}`;
+    const act = opts.manage ? `<div class="dev-act"><button type="button" class="btn btn-sm dev-edit" data-hubedit aria-label="${isOwner() ? 'Edit' : 'Details for'} the hub">${icon(isOwner() ? 'edit' : 'eye')} ${isOwner() ? 'Edit' : 'Details'}</button></div>` : '';
+    return `<div class="dev dev-hub ${cls}"><div class="top"><span class="ico">${icon('server')}</span><span class="state">${esc(state)}</span></div>
+      <div class="name" title="${esc(h.name || 'SmartBase')}">${esc(h.name || 'SmartBase')}</div><div class="room">${esc(h.location || 'Hub')}</div>
+      <div class="meta">${meta}</div>${act}</div>`;
+  }
+  function hubDetails() {
+    const h = S.hub; if (!h.id) return;
+    const row = (k, v, code) => `<div><dt>${k}${code ? ` <code class="code">${code}</code>` : ''}</dt><dd>${v}</dd></div>`;
+    const ov = document.createElement('div'); ov.className = 'kp-ov';
+    ov.innerHTML = `<form class="cf sd" role="dialog" aria-modal="true" aria-labelledby="hd-t">
+      <div class="sd-head"><span class="ico sd-ico">${icon('server')}</span><div><h3 id="hd-t">${esc(h.name || 'SmartBase')}</h3><div class="f-help">Hub · can't be removed</div></div>
+        <button type="button" class="btn btn-icon sd-x" data-cancel aria-label="Close">${icon('x')}</button></div>
+      <div class="sd-sec">Name &amp; location</div>
+      <label class="sd-f"><span>Name</span><input class="in" name="n" value="${esc(h.name || '')}" placeholder="SmartBase" maxlength="40"></label>
+      <label class="sd-f"><span>Location</span><input class="in" name="l" value="${esc(h.location || '')}" placeholder="e.g. Hall closet" maxlength="80"></label>
+      <div class="sd-sec">Status</div>
+      <dl class="kv">
+        ${row('Status', h.online ? `<span class="sd-pill">Online</span>` : `<span class="sd-pill warn">Offline</span> · last seen ${ago(h.lastSeen)}`)}
+        ${row('Power', esc(hubPower(h)), 'pw')}
+        ${row('Backup battery', h.batPct != null ? `about ${h.batPct}% <span class="sd-raw">(${h.bat} mV)</span>` : '—', 'bat')}
+        ${row('Wi-Fi', h.ss != null ? `${esc(h.ss)} · ${h.rs} dBm` : '—', 'ss/rs')}
+        ${row('Temperature / humidity', h.temp != null ? `${temp(h.temp)} · ${h.hum ?? '—'}%` : '—', 'cl')}
+        ${row('Address', esc(h.ip || '—'))}
+        ${row('Firmware', `<span class="sd-mono">${esc(h.bfw || '—')}</span>`, 'bfw')}
+      </dl>
+      <div class="sd-actions"><span class="sd-sp"></span><button type="button" class="btn" data-cancel>${isOwner() ? 'Cancel' : 'Close'}</button>${isOwner() ? '<button class="btn btn-primary">Save</button>' : ''}</div>
+    </form>`;
+    document.body.appendChild(ov);
+    const form = ov.querySelector('form');
+    if (!isOwner()) form.querySelectorAll('input').forEach(i => { i.disabled = true; });
+    const close = () => { ov.remove(); document.removeEventListener('keydown', key); };
+    const key = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', key);
+    ov.addEventListener('click', e => { if (e.target === ov || e.target.closest('[data-cancel]')) close(); });
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        S.hub = toHub(await api('PATCH', '/hub', { name: form.n.value.trim(), location: form.l.value.trim() }));
+        S.settings.hubName = S.hub.name; S.settings.hubLoc = S.hub.location; emit(); toast('Saved'); close();
+      } catch (err) { toast(esc(err.message), 'err'); }
+    });
+    form.querySelector('.sd-x').focus({ preventScroll: true });
+  }
+  // a sensor the hub hasn't reported (yet): the owner enters its slot and type
+  const ADD_TYPES = [['door', 'Entry (door / window) sensor'], ['motion', 'Motion sensor'], ['leak', 'Water leak / temperature sensor'], ['smoke', 'Smoke alarm listener'], ['keypad', 'Keypad'], ['unknown', 'Something else']];
+  function addSensorDialog() {
+    const ov = document.createElement('div'); ov.className = 'kp-ov';
+    ov.innerHTML = `<form class="cf sd" role="dialog" aria-modal="true" aria-labelledby="as-t">
+      <div class="sd-head"><span class="ico sd-ico">${icon('plus')}</span><div><h3 id="as-t">Add a sensor by hand</h3><div class="f-help">For a sensor that's paired with the hub but hasn't shown up</div></div>
+        <button type="button" class="btn btn-icon sd-x" data-cancel aria-label="Close">${icon('x')}</button></div>
+      <div class="sd-sec">Heard from, but not in your list</div>
+      <div class="untracked" data-untracked><div class="scan-wait"><span class="spin"></span> Looking…</div></div>
+      <div class="sd-sec">Sensor</div>
+      <label class="sd-f"><span>Type</span><select class="in" name="t" required>${ADD_TYPES.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select></label>
+      <label class="sd-f"><span>Slot ID</span><input class="in" name="id" inputmode="numeric" pattern="[0-9]{1,6}" required placeholder="e.g. 7" maxlength="6"></label>
+      <div class="f-help" style="margin:-4px 0 6px">The number the hub uses for it (<code>dj.id</code>). The Roost app showed it in the device's details, and the protocol log shows it whenever the sensor reports.</div>
+      <label class="sd-f"><span>Name</span><input class="in" name="n" required maxlength="40" placeholder="e.g. Back Door"></label>
+      <label class="sd-f"><span>Room</span><div class="combo"><input class="in" name="r" placeholder="Room — search or create" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Room"><ul class="combo-list" role="listbox" hidden></ul></div></label>
+      <div class="note">${icon('alert')} <span>This only tells OpenRoost about it: the hub must already know the sensor. It shows as <b>Waiting</b> until the hub reports that slot; then its status, battery and signal fill in. If it never does, pair it again (Add a sensor → the hub's grey button).</span></div>
+      <div class="sd-actions"><span class="sd-sp"></span><button type="button" class="btn" data-cancel>Cancel</button><button class="btn btn-primary">Add sensor</button></div>
+    </form>`;
+    document.body.appendChild(ov);
+    const form = ov.querySelector('form'); roomCombo(form.querySelector('.combo'));
+    const box = form.querySelector('[data-untracked]');
+    api('GET', '/sensors/untracked').then(r => {
+      const list = r.devices;
+      box.innerHTML = list.length ? `<div class="f-help">Every device the hub has reported to this server that isn't a sensor in your list. Pick one to fill in its ID and type.</div>
+        <ul class="ut-list">${list.map((d, i) => `<li><div><b>ID ${esc(String(d.id))}</b> · ${esc(d.typeLabel)}${d.type === 'unknown' && d.dt != null ? ` <span class="sd-raw">(dt ${esc(String(d.dt))})</span>` : ''}${d.removed ? ' <span class="sd-pill warn">removed</span>' : ''}
+          <div class="f-help">last heard ${ago(d.lastSeen * 1000)} · ${d.reports} report${d.reports === 1 ? '' : 's'}${d.mac ? ' · <span class="sd-mono">' + esc(d.mac) + '</span>' : ''}</div></div>
+          ${d.usable ? `<button type="button" class="btn btn-sm" data-use="${i}">Use</button>` : '<span class="f-help">ID not usable</span>'}</li>`).join('')}</ul>`
+        : '<div class="f-help">Nothing: every device the hub has reported is already in your list. A sensor that never reports doesn\'t show up here; you can still add it by its ID below.</div>';
+      box.querySelectorAll('[data-use]').forEach(b => b.addEventListener('click', () => {
+        const d = list[+b.dataset.use];
+        form.id.value = d.id; form.t.value = ADD_TYPES.some(([v]) => v === d.type) ? d.type : 'unknown';
+        box.querySelectorAll('li').forEach(li => li.classList.toggle('on', li.contains(b))); form.n.focus();
+      }));
+    }).catch(err => { box.innerHTML = `<div class="f-help">${esc(err.message)}</div>`; });
+    const close = () => { ov.remove(); document.removeEventListener('keydown', key); };
+    const key = e => { if (e.key === 'Escape' && !ov.querySelector('.combo-list:not([hidden])')) close(); };
+    document.addEventListener('keydown', key);
+    ov.addEventListener('click', e => { if (e.target === ov || e.target.closest('[data-cancel]')) close(); });
+    form.addEventListener('submit', async e => {
+      e.preventDefault(); if (ov.querySelector('.combo-list:not([hidden])')) return;
+      const room = form.r.value.trim();
+      try {
+        const v = await api('POST', '/sensors', { id: +form.id.value, type: form.t.value, name: form.n.value.trim(), room: room ? createRoom(room) : '' });
+        upsertSensor(v); emit(); toast(`Added ${esc(v.displayName)}`); close();
+      } catch (err) { toast(esc(err.message), 'err', 6000); }
+    });
+    form.querySelector('.sd-x').focus({ preventScroll: true });
   }
   function timeline(list, raw) {
     if (!list.length) return '<div class="empty">Nothing here yet.</div>';
@@ -1392,8 +1554,8 @@
 
   window.OpenRoost = {
     session, logout, gate, userMenu, SV_STATE, api, download, loadFeatures, isPlanned, plannedAttrs, defaultSettings, manualDnsHTML, bindCopy,
-    ui: { isMissing, health, healthHTML, stateInfo, ringHTML, modesHTML, previewNote, bindHome, devCard, timeline, alertsHTML, ACTIVITY_SETS, startRouter },
-    S, on, mount, emit, icon, esc, removeSensor, confirmRemoveSensor, sensorDetails, renameSensor,
+    ui: { isMissing, isLow, health, healthHTML, stateInfo, ringHTML, modesHTML, previewNote, bindHome, devCard, hubCard, timeline, alertsHTML, ACTIVITY_SETS, startRouter },
+    S, on, mount, emit, icon, esc, removeSensor, confirmRemoveSensor, sensorDetails, renameSensor, hubDetails, addSensorDialog, setHTML,
     SECTIONS, renderSettings, renderPairing, toast, badge, roomCombo, createRoom, applyLook, persist,
     svc: { PH_OPTS, MAIL_OPTS, choiceCards, renderPiholeSetup, renderMailSetup, piholeReady, piholeWhy, mailWhy, mailTarget, piholeSummary, mailSummary, phHostOf, newPihole, newMail },
     TYPE_LABEL, TYPE_ICON, KIND_ICON, AS_LABEL, DA_LABEL,

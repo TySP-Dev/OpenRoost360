@@ -15,12 +15,22 @@ DA_LABEL = {'ow': 'owner PIN', 'gu': 'guest PIN', 'ho': 'hostage PIN'}
 STATE_LABEL = {'open': 'Open', 'closed': 'Closed', 'motion': 'Motion', 'clear': 'Clear', 'wet': 'Wet', 'dry': 'Dry', 'ok': 'OK'}
 URGENT = ('intrusion', 'fire', 'panic', 'duress', 'leak')
 DEFAULT_EXIT, DEFAULT_ENTRY = 60, 45          # seen on a real hub (docs/PROTOCOL.md "Example alarm sequence")
+DEFAULT_LOWBAT = 35                           # % at or below which a battery counts as low
+ONLINE_GRACE = 150                            # s: the hub pings every 60 s, so this long without a word means it's gone
+KIND_DT = {v: k for k, v in DT.items()}
+MANUAL_TYPES = ('door', 'motion', 'leak', 'smoke', 'keypad', 'unknown')
 
 
 def bat_pct(kind, raw):
     if raw is None: return None
-    p = (raw - 2400) / 6 if kind == 'keypad' else (raw - 600) / 4.1
+    if kind == 'hub': p = (raw - 3400) / 7.5            # hub backup cell in mV (one Li-ion cell: ~3.4 V empty, ~4.15 V full)
+    else: p = (raw - 2400) / 6 if kind == 'keypad' else (raw - 600) / 4.1
     return max(0, min(100, round(p)))
+
+
+def low_limit(settings):
+    try: return int(settings.get('lowBat') or DEFAULT_LOWBAT)
+    except (TypeError, ValueError): return DEFAULT_LOWBAT
 
 
 def bars(rs):
@@ -41,8 +51,12 @@ class Hub:
         self.sensors = store.sensors_all()                # id -> live data from dj reports
         self.alerts = {a['kind']: a for a in store.alerts_all()}
         self.session = None                               # live MQTT session info
+        self._seen_saved = 0                              # last time lastSeen was written for a ping (limits disk writes)
+        self._online = None                               # last online state published (tick() notices a hub going quiet)
         self.listener = {'listening': False, 'port': None, 'lastTime': None, 'lastConnect': None, 'rejected': None}
         self.pairing = store.kv('pairing', {'until': 0, 'since': 0})
+        self.seen = store.kv('seenDevices', None)         # every device ID the hub has reported, tracked or not
+        if self.seen is None: self.seen = self._backfill_seen()
         self.flags = store.kv('flags', {})                # notification de-duplication (missing, low battery, climate…)
         self.last_trip = None                             # last door/motion trip, used as the alarm's likely cause
         self.publish_hook = None                          # listener sets this: publish(topic, payload) to the hub
@@ -99,6 +113,14 @@ class Hub:
         self.listener['lastTime'] = {'t': time.time(), 'peer': peer}
         self.bus.publish('listener', {'step': 'time', 'peer': peer})
 
+    def on_activity(self, token=None):
+        """Any packet from the live session (pings included) means the hub is there."""
+        with self.lock:
+            if token is not None and (not self.session or self.session.get('token') != token): return
+            now = time.time(); self.status['lastSeen'] = now
+            if now - self._seen_saved > 30 or self._online is False:
+                self._seen_saved = now; self._save_hub()
+
     def accept_client(self, client_id, peer_ip):
         """Only the claimed hub may connect once one is claimed (stops another device faking events)."""
         dev, claim = device_id(client_id), self.claim()
@@ -114,10 +136,10 @@ class Hub:
         self._event('system', 'info', 'Hub claimed', dev)
         if self.nat_hook and ip: self.nat_hook(ip)
 
-    def on_connect(self, client_id, peer_ip):
+    def on_connect(self, client_id, peer_ip, token=None):
         dev = device_id(client_id)
         with self.lock:
-            self.session = {'id': dev, 'ip': peer_ip, 'since': time.time(), 'subscribed': [], 'configSent': False}
+            self.session = {'id': dev, 'ip': peer_ip, 'since': time.time(), 'subscribed': [], 'configSent': False, 'token': token}
             self.status.update(id=dev, ip=peer_ip, lastSeen=time.time())
             self.listener['lastConnect'] = {'t': time.time(), 'id': dev, 'ip': peer_ip}
             if self.claim() and self.claim().get('ip') != peer_ip:
@@ -131,13 +153,16 @@ class Hub:
             self._event('system', 'info', 'Hub reconnected', f'{dev} at {peer_ip}')
             self._notify('offline', 'Hub back online', f'The SmartBase reconnected from {peer_ip}.')
 
-    def on_subscribe(self, topics, config_sent):
-        if self.session:
+    def on_subscribe(self, topics, config_sent, token=None):
+        if self.session and (token is None or self.session.get('token') == token):
             self.session['subscribed'] = topics; self.session['configSent'] = config_sent
         self.bus.publish('listener', {'step': 'subscribe', 'topics': topics, 'configSent': config_sent})
 
-    def on_disconnect(self, reason=''):
+    def on_disconnect(self, reason='', token=None):
+        """A connection ended. Only the current session counts: the hub often opens a new connection before the old
+        one has timed out, and that old one closing must not mark the hub offline."""
         with self.lock:
+            if token is not None and (not self.session or self.session.get('token') != token): return
             if self.session: self.status['lastSeen'] = time.time()
             self.session = None
             self._save_hub()
@@ -146,7 +171,64 @@ class Hub:
         try: msg = json.loads(payload.decode())
         except (ValueError, UnicodeDecodeError): return
         if not isinstance(msg, dict): return
-        with self.lock: self._handle(msg)
+        with self.lock:
+            self._record_seen(msg)
+            self._handle(msg)
+
+    def _backfill_seen(self):
+        """First start with this feature: rebuild the list from the sensors table and the raw hub messages kept with
+        past events."""
+        seen = {}
+        for sid, x in self.sensors.items():
+            if x.get('lastSeen'):
+                seen[str(sid)] = {'id': str(sid), 'first': x.get('firstSeen') or x['lastSeen'], 'last': x['lastSeen'], 'count': 1,
+                                  **{k: x[k] for k in ('dt', 'mac') if x.get(k) is not None}, **({'fw': x['fw']} if x.get('fw') else {})}
+        for (t, raw) in self.store.q("SELECT t, raw FROM events WHERE raw LIKE '%\"dj\"%' ORDER BY id DESC LIMIT 5000"):
+            try: dj = json.loads(raw).get('dj')
+            except (ValueError, AttributeError): continue
+            if not isinstance(dj, dict) or dj.get('id') is None or isinstance(dj['id'], (dict, list)): continue
+            key = str(dj['id'])[:20]
+            e = seen.setdefault(key, {'id': key, 'first': t, 'last': t, 'count': 0})
+            e['first'], e['last'], e['count'] = min(e['first'], t), max(e['last'], t), e['count'] + 1
+            for k in ('dt', 'mac', 'fw'):
+                if dj.get(k) is not None and k not in e: e[k] = dj[k]
+        self.store.set_kv('seenDevices', seen)
+        return seen
+
+    def _record_seen(self, msg):
+        """Remember each device ID the hub reports (with its type code), whatever happens to the message next, so the
+        owner can see devices that talk to the server but aren't in the sensor list."""
+        djs = msg.get('dj'); djs = [djs] if isinstance(djs, dict) else [d for d in djs if isinstance(d, dict)] if isinstance(djs, list) else []
+        now = time.time()
+        for dj in djs:
+            raw = dj.get('id')
+            if raw is None or isinstance(raw, (dict, list)): continue
+            key = str(raw)[:20]
+            e = self.seen.get(key) or {'id': key, 'first': now, 'count': 0}
+            e.update(last=now, count=e['count'] + 1)
+            for k in ('dt', 'mac', 'fw'):
+                if dj.get(k) is not None: e[k] = dj[k] if not isinstance(dj[k], str) else dj[k][:40]
+            if dj.get('ev') is not None: e['ev'] = dj['ev']
+            self.seen[key] = e
+        if djs:
+            if len(self.seen) > 300:                              # keep the newest
+                self.seen = dict(sorted(self.seen.items(), key=lambda kv: -kv[1]['last'])[:300])
+            self.store.set_kv('seenDevices', self.seen)
+
+    def untracked_view(self):
+        """Devices the hub has reported that aren't in the sensor list (removed, or with an ID OpenRoost couldn't use)."""
+        out = []
+        for key, e in self.seen.items():
+            try: sid = int(key)
+            except ValueError: sid = None
+            s = self.sensors.get(sid) if sid is not None else None
+            if s and s.get('lastSeen') and not self.meta().get(str(sid), {}).get('removed'): continue
+            kind = DT.get(e.get('dt'), 'unknown')
+            out.append({'id': sid if sid is not None else key, 'usable': sid is not None and 1 <= sid <= 999999, 'type': kind,
+                        'typeLabel': TYPE_LABEL.get(kind, 'Device'), 'dt': e.get('dt'), 'mac': e.get('mac'), 'firmware': e.get('fw'),
+                        'firstSeen': e['first'], 'lastSeen': e['last'], 'reports': e['count'],
+                        'removed': bool(s and self.meta().get(str(sid), {}).get('removed'))})
+        return sorted(out, key=lambda x: -x['lastSeen'])
 
     # ------------------------------------------------------------- message handling (docs/PROTOCOL.md)
     def _handle(self, m):
@@ -224,6 +306,8 @@ class Hub:
         if meta.get('removed'):                                  # a removed sensor reported again: offer it for set-up
             self._forget_removed(sid); is_new = True
         dt = dj.get('dt'); kind = DT.get(dt, 'unknown') if dt is not None else s.get('type', 'unknown')
+        if kind == 'unknown' and s.get('manual') and s.get('type') in MANUAL_TYPES: kind = s['type']    # the owner said what it is
+        is_new = is_new or (s.get('manual') and not s.get('lastSeen'))
         s.update(type=kind, lastSeen=now)
         for k in ('dt', 'mac', 'bat', 'rs', 'fw', 'hw', 'as'):
             if k in dj: s[k] = dj[k]
@@ -263,13 +347,33 @@ class Hub:
         if s.get('state') is None: s['state'] = {'door': 'closed', 'motion': 'clear', 'leak': 'dry'}.get(kind, 'ok')
         if title: self._event('sensor', 'info', title, meta.get('room', ''), sid, m)
         elif code == 0 and kind != 'leak': pass                 # routine check-in: no history entry
-        if is_new:
+        if is_new and s.get('manual'):
+            self._event('pair', 'info', f'{name} reported in', f'Added by hand; the hub reports it in slot {sid}', sid, m)
+        elif is_new:
             self._event('pair', 'info', 'New sensor found', f'{TYPE_LABEL.get(kind, "Device")} in slot {sid}', sid, m)
         self._battery(sid, s, name)
         if self.flags.get(f'missing:{sid}'):
             self._set_flag(f'missing:{sid}', False); self._event('system', 'info', f'{name} is back', '', sid)
         self.sensors[sid] = s; self.store.save_sensor(sid, s)
         self.bus.publish('sensor', self.sensor_view(sid))
+
+    @staticmethod
+    def type_editable(s):
+        """The owner may say what a sensor is while the hub hasn't reported it, or when the hub's device code isn't known."""
+        return not s.get('lastSeen') or s.get('dt') not in DT
+
+    def add_manual(self, sid, kind):
+        """A sensor the owner adds by hand (its slot ID and type), e.g. one that's paired with the hub but hasn't
+        reported since OpenRoost started. It shows as "waiting" until the hub reports that slot."""
+        with self.lock:
+            s = self.sensors.get(sid)
+            if s and not self.meta().get(str(sid), {}).get('removed'): raise ValueError(f'Slot {sid} is already in use')
+            now = time.time()
+            s = s or {'id': sid, 'firstSeen': now, 'state': None, 'lastSeen': None}
+            s.update(manual=True)
+            if not s.get('lastSeen') or s.get('type') in (None, 'unknown'): s.update(type=kind, dt=KIND_DT.get(kind))
+            self.sensors[sid] = s; self.store.save_sensor(sid, s)
+        return s
 
     def _forget_removed(self, sid):
         st = self.settings(); m = dict(st.get('sensorMeta', {}))
@@ -285,7 +389,7 @@ class Hub:
     def _battery(self, sid, s, name):
         pct = bat_pct(s.get('type'), s.get('bat'))
         if pct is None: return
-        low = int(self.settings().get('lowBat') or 20)
+        low = low_limit(self.settings())
         key = f'lowbat:{sid}'
         if pct <= low and not self.flags.get(key):
             self._set_flag(key, True)
@@ -321,6 +425,8 @@ class Hub:
             if cd and cd['ends'] < now - 5: self.arm['countdown'] = None; self._save_arm()
             # hub offline (on battery the hub disconnects on purpose; don't alarm for that)
             last = self.status.get('lastSeen')
+            online = self.is_online(now)
+            if online != self._online: self._online = online; self.bus.publish('hub', self.hub_view())   # gone quiet / back
             limit = int(st.get('offlineMin') or 10) * 60
             if not self.session and last and now - last > limit and self.status.get('pw', 1) == 1 and not self.flags.get('offline'):
                 self._set_flag('offline', True)
@@ -330,7 +436,7 @@ class Hub:
             hours = int(st.get('sensorMissingH') or 24)
             for sid, s in self.sensors.items():
                 if self.meta().get(str(sid), {}).get('removed'): continue
-                if now - s.get('lastSeen', now) > hours * 3600 and not self.flags.get(f'missing:{sid}'):
+                if now - (s.get('lastSeen') or now) > hours * 3600 and not self.flags.get(f'missing:{sid}'):
                     self._set_flag(f'missing:{sid}', True)
                     name = self._name(sid, s)
                     self._event('system', 'warn', f'{name} is missing', f'No check-in for over {hours} h', sid)
@@ -349,13 +455,22 @@ class Hub:
         self.pairing['until'] = 0; self.store.set_kv('pairing', self.pairing); self.bus.publish('pairing', self.pairing_view())
 
     # ------------------------------------------------------------- views (API shapes)
+    def is_online(self, now=None):
+        """Connected now, or heard from within the last couple of minutes (on battery the hub connects, reports and
+        hangs up on purpose)."""
+        last = self.status.get('lastSeen')
+        return bool(self.session) or bool(last and (now or time.time()) - last < ONLINE_GRACE)
+
     def hub_view(self):
         s, sess = self.status, self.session
+        st = self.settings(); pct = bat_pct('hub', s.get('bat'))
         return {
-            'id': s.get('id'), 'claimed': (self.claim() or {}).get('id'), 'online': bool(sess),
+            'id': s.get('id'), 'claimed': (self.claim() or {}).get('id'), 'online': self.is_online(), 'connected': bool(sess),
+            'name': st.get('hubName') or 'SmartBase', 'location': st.get('hubLoc') or '',
             'connectedSince': sess and sess['since'], 'lastSeen': s.get('lastSeen'), 'ip': s.get('ip'),
             'power': None if s.get('pw') is None else ('mains' if s.get('pw') == 1 else 'battery'),
-            'backupBatteryMv': s.get('bat'), 'connection': {'w': 'wifi'}.get(s.get('co'), s.get('co')),
+            'backupBatteryMv': s.get('bat'), 'backupBatteryPct': pct, 'backupBatteryLow': pct is not None and pct <= low_limit(st),
+            'connection': {'w': 'wifi'}.get(s.get('co'), s.get('co')),
             'wifi': {'ssid': s.get('ss'), 'channel': s.get('wc'), 'rssi': s.get('rs')} if s.get('ss') is not None else None,
             'cellular': None if s.get('cs') is None else {'signal': None if s.get('cs') == 99 else s.get('cs')},
             'climate': None if s.get('temp') is None else {'tempC': s.get('temp'), 'humidity': s.get('hum')},
@@ -375,14 +490,15 @@ class Hub:
         s = self.sensors.get(sid)
         if not s: return None
         meta = self.meta().get(str(sid), {}); st = self.settings()
-        pct = bat_pct(s.get('type'), s.get('bat')); hours = int(st.get('sensorMissingH') or 24)
+        pct = bat_pct(s.get('type'), s.get('bat')); hours = int(st.get('sensorMissingH') or 24); last = s.get('lastSeen')
         return {'id': sid, 'type': s.get('type'), 'typeLabel': TYPE_LABEL.get(s.get('type'), 'Device'), 'dt': s.get('dt'),
                 'name': meta.get('name') or '', 'displayName': self._name(sid, s), 'room': meta.get('room', ''), 'named': bool(meta.get('name')),
                 'removed': bool(meta.get('removed')), 'state': s.get('state'), 'stateLabel': STATE_LABEL.get(s.get('state'), s.get('state') or ''),
-                'battery': {'raw': s.get('bat'), 'pct': pct, 'low': pct is not None and pct <= int(st.get('lowBat') or 20)},
+                'battery': {'raw': s.get('bat'), 'pct': pct, 'low': pct is not None and pct <= low_limit(st)},
                 'signal': {'rssi': s.get('rs'), 'bars': bars(s.get('rs'))}, 'firmware': s.get('fw'), 'hardware': s.get('hw'), 'mac': s.get('mac'),
                 'alertMode': s.get('as'), 'temp': s.get('temp'), 'humidity': s.get('hum'), 'firstSeen': s.get('firstSeen'),
-                'lastSeen': s.get('lastSeen'), 'missing': time.time() - s.get('lastSeen', time.time()) > hours * 3600}
+                'lastSeen': last, 'manual': bool(s.get('manual')), 'waiting': not last, 'typeEditable': self.type_editable(s),
+                'missing': bool(last) and time.time() - last > hours * 3600}
 
     def sensors_view(self, include_removed=False):
         out = [self.sensor_view(i) for i in sorted(self.sensors)]
@@ -403,6 +519,7 @@ class Hub:
     def pairing_view(self):
         p = self.pairing; now = time.time(); active = p.get('until', 0) > now
         found = [self.sensor_view(i) for i, s in self.sensors.items() if s.get('firstSeen', 0) >= p.get('since', now) or not self.meta().get(str(i), {}).get('name')]
+        found = [f for f in found if f and not (f['manual'] and f['waiting'])]
         return {'active': active, 'until': p.get('until') if active else None, 'since': p.get('since'),
                 'found': [f for f in found if f and not f['removed'] and not f['named']]}
 

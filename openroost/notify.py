@@ -20,12 +20,23 @@ class NotifyError(Exception):
     pass
 
 
+class _KeepMethod(urllib.request.HTTPRedirectHandler):
+    """urllib turns a redirected POST/PUT into a GET without its body, which servers answer with a confusing
+    "method not supported". Refuse instead, naming where the server wanted to send us."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.get_method() in ('GET', 'HEAD'): return super().redirect_request(req, fp, code, msg, headers, newurl)
+        raise NotifyError(f'{req.full_url.split("?")[0]} redirects to {newurl.split("?")[0]}: use that address instead')
+
+
+_opener = urllib.request.build_opener(_KeepMethod)
+
+
 def _http(method, url, body=None, headers=None):
     data = body if isinstance(body, (bytes, type(None))) else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method, headers={'User-Agent': 'OpenRoost360', **(headers or {})})
     if data is not None and 'Content-Type' not in req.headers: req.add_header('Content-Type', 'application/json')
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with _opener.open(req, timeout=TIMEOUT) as r:
             raw = r.read(); return r.status, (json.loads(raw) if raw[:1] in (b'{', b'[') else raw.decode(errors='replace'))
     except urllib.error.HTTPError as e:
         raw = e.read()[:500].decode(errors='replace')
@@ -289,12 +300,42 @@ class Notifier:
         self._mx_send(hs, h, room, text)
         return room
 
+    @staticmethod
+    def matrix_base(hs):
+        """The homeserver's client API address. People type their server name (https://example.org), but the server
+        often lives elsewhere (https://matrix.example.org), announced in /.well-known/matrix/client (Matrix spec,
+        client discovery)."""
+        hs = (hs or '').strip().rstrip('/')
+        if hs and '://' not in hs: hs = 'https://' + hs
+        if not re.match(r'^https?://[^/\s]+', hs): raise NotifyError('Enter the homeserver as a web address, e.g. https://matrix.example.org')
+        root = '/'.join(hs.split('/')[:3])
+        try:
+            _, wk = _http('GET', root + '/.well-known/matrix/client')
+            base = ((wk or {}).get('m.homeserver') or {}).get('base_url') if isinstance(wk, dict) else None
+            if base and re.match(r'^https?://', base): hs = base.rstrip('/')
+        except NotifyError: pass                                  # no delegation: the address is the homeserver itself
+        try: _http('GET', hs + '/_matrix/client/versions')
+        except NotifyError as e:
+            if 'answered' not in str(e): raise                    # unreachable; any HTTP answer means it's there
+        return hs
+
     def matrix_login(self, hs, user, password):
-        """Sign the bot in (a new device) and set up its encryption keys. Returns (access token, note or None).
-        The password is used here only (and for cross-signing) and never stored."""
-        hs = hs.rstrip('/')
-        _, r = _http('POST', f'{hs}/_matrix/client/v3/login', {'type': 'm.login.password', 'identifier': {'type': 'm.id.user', 'user': user},
-                                                                'password': password, 'initial_device_display_name': 'OpenRoost360'})
+        """Sign the bot in (a new device) and set up its encryption keys. Returns (access token, note or None, the
+        homeserver's real address). The password is used here only (and for cross-signing) and never stored."""
+        hs = self.matrix_base(hs)
+        try: _, flows = _http('GET', f'{hs}/_matrix/client/v3/login')
+        except NotifyError: flows = {}
+        types = [f.get('type') for f in (flows or {}).get('flows', [])] if isinstance(flows, dict) else []
+        if types and 'm.login.password' not in types:
+            raise NotifyError(f'{hs} doesn\'t allow password sign-in for bots (it offers {", ".join(types)}).')
+        try:
+            _, r = _http('POST', f'{hs}/_matrix/client/v3/login', {'type': 'm.login.password', 'identifier': {'type': 'm.id.user', 'user': user},
+                                                                    'password': password, 'initial_device_display_name': 'OpenRoost360'})
+        except NotifyError as e:
+            if 'M_FORBIDDEN' in str(e):
+                why = re.search(r'"error"\s*:\s*"([^"]{1,200})"', str(e))
+                raise NotifyError(f'The homeserver refused the bot\'s user name or password{": " + why.group(1) if why else "."}') from None
+            raise
         tok, note = r['access_token'], None
         self.store.set_kv('mxdm', {})                       # direct-message rooms were the old device's; start fresh
         if not mxcrypto.available():
@@ -303,4 +344,4 @@ class Notifier:
             try: note = self.crypto.setup(hs, tok, r.get('user_id') or user, r['device_id'], password)
             except mxcrypto.CryptoError as e:
                 self.crypto.forget(); note = f'Signed in, but encryption couldn\'t be set up: {e}. Unencrypted rooms still work.'
-        return tok, note
+        return tok, note, hs
