@@ -8,7 +8,7 @@ import json, threading, time
 
 DT = {2883353816: 'keypad', 588387123: 'door', 2455340117: 'motion', 287458440: 'leak', 1149772305: 'smoke'}
 TYPE_LABEL = {'keypad': 'Keypad', 'door': 'Entry sensor', 'motion': 'Motion sensor', 'leak': 'Water leak / temp',
-              'smoke': 'Smoke listener', 'unknown': 'Unrecognised device'}
+              'smoke': 'Smoke listener', 'unknown': 'Sensor'}
 AS_MODE = {0: 'off', 2: 'home', 8: 'arming', 4: 'away'}
 AS_LABEL = {0: 'Disarmed', 2: 'Armed Home', 8: 'Arming Away', 4: 'Armed Away'}
 DA_LABEL = {'ow': 'owner PIN', 'gu': 'guest PIN', 'ho': 'hostage PIN'}
@@ -25,6 +25,20 @@ def bat_pct(kind, raw):
     if raw is None: return None
     p = (raw - 2400) / 6 if kind == 'keypad' else (raw - 600) / 4.1
     return max(0, min(100, round(p)))
+
+
+def infer_kind(dj):
+    """Work out a sensor's type from what it reports, for a device code that isn't in DT (docs/PROTOCOL.md: door
+    14/15, motion 17/18, panic 12 from a keypad, a climate reading from the water/temperature sensor, xe firmware on
+    the smoke listener). None when nothing tells yet: a routine check-in (event 0) says nothing."""
+    try: code = int(dj.get('ev'))
+    except (TypeError, ValueError): code = None
+    if code in (14, 15): return 'door'
+    if code in (17, 18): return 'motion'
+    if code == 12: return 'keypad'
+    if isinstance(dj.get('cl'), list) and dj['cl']: return 'leak'
+    if str(dj.get('fw') or '').startswith('xe.'): return 'smoke'
+    return None
 
 
 def low_limit(settings):
@@ -304,8 +318,11 @@ class Hub:
         is_new = sid not in self.sensors
         if meta.get('removed'):                                  # a removed sensor reported again: offer it for set-up
             self._forget_removed(sid); is_new = True
-        dt = dj.get('dt'); kind = DT.get(dt, 'unknown') if dt is not None else s.get('type', 'unknown')
-        if kind == 'unknown' and s.get('manual') and s.get('type') in MANUAL_TYPES: kind = s['type']    # the owner said what it is
+        kind, how = self._kind(dj, s)
+        if how == 'inferred' and not s.get('inferred'):
+            s['inferred'] = True
+            if not is_new: self._event('pair', 'info', f'{self._name(sid, {**s, "type": kind})}: type worked out', f'{TYPE_LABEL[kind]}, from what it reports', sid, m)
+        elif how != 'inferred': s.pop('inferred', None)
         is_new = is_new or (s.get('manual') and not s.get('lastSeen'))
         s.update(type=kind, lastSeen=now)
         for k in ('dt', 'mac', 'bat', 'rs', 'fw', 'hw', 'as'):
@@ -349,7 +366,8 @@ class Hub:
         if is_new and s.get('manual'):
             self._event('pair', 'info', f'{name} reported in', f'Added by hand; the hub reports it in slot {sid}', sid, m)
         elif is_new:
-            self._event('pair', 'info', 'New sensor found', f'{TYPE_LABEL.get(kind, "Device")} in slot {sid}', sid, m)
+            self._event('pair', 'info', 'New sensor found', f'{TYPE_LABEL.get(kind, "Device")} in slot {sid}'
+                        + (' (type worked out from what it reports)' if how == 'inferred' else ' (type not known yet)' if kind == 'unknown' else ''), sid, m)
         self._battery(sid, s, name)
         if self.flags.get(f'missing:{sid}'):
             self._set_flag(f'missing:{sid}', False); self._event('system', 'info', f'{name} is back', '', sid)
@@ -373,6 +391,22 @@ class Hub:
             if not s.get('lastSeen') or s.get('type') in (None, 'unknown'): s.update(type=kind, dt=KIND_DT.get(kind))
             self.sensors[sid] = s; self.store.save_sensor(sid, s)
         return s
+
+    def _kind(self, dj, s):
+        """(type, how): 'hub' when the device code is in OpenRoost's table, 'owner' when the owner set it, 'inferred' when
+        worked out from what the sensor reports, 'unknown' otherwise. A device code worked out once is remembered, so
+        other sensors of the same model are recognised straight away."""
+        dt = dj.get('dt', s.get('dt'))
+        if dt in DT: return DT[dt], 'hub'
+        if s.get('manual') and s.get('type') in MANUAL_TYPES and s['type'] != 'unknown': return s['type'], 'owner'
+        learned = (self.store.kv('learnedDt') or {}).get(str(dt)) if dt is not None else None
+        if learned in DT.values(): return learned, 'inferred'
+        kind = infer_kind(dj) or (s.get('type') if s.get('inferred') else None)
+        if kind:
+            if dt is not None:
+                ld = dict(self.store.kv('learnedDt') or {}); ld[str(dt)] = kind; self.store.set_kv('learnedDt', ld)
+            return kind, 'inferred'
+        return 'unknown', 'unknown'
 
     def _forget_removed(self, sid):
         st = self.settings(); m = dict(st.get('sensorMeta', {}))
@@ -517,6 +551,7 @@ class Hub:
                 'signal': {'rssi': s.get('rs'), 'bars': bars(s.get('rs'))}, 'firmware': s.get('fw'), 'hardware': s.get('hw'), 'mac': s.get('mac'),
                 'alertMode': s.get('as'), 'temp': s.get('temp'), 'humidity': s.get('hum'), 'firstSeen': s.get('firstSeen'),
                 'lastSeen': last, 'manual': bool(s.get('manual')), 'waiting': not last, 'typeEditable': self.type_editable(s),
+                'typeFrom': 'hub' if s.get('dt') in DT else 'owner' if s.get('manual') and s.get('type') != 'unknown' else 'inferred' if s.get('inferred') else 'unknown',
                 'missing': bool(last) and time.time() - last > hours * 3600}
 
     def sensors_view(self, include_removed=False):

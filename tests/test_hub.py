@@ -75,6 +75,25 @@ def main():
     st, js = s.req('PATCH', '/api/v1/sensors/9', {'type': 'motion'}, cookie=ck)[:2]
     check('…but not a type the hub reports itself', st == 409, (st, js))
 
+    print('\n== Unrecognised sensors are added and their type worked out')
+    sv = lambda i: s.req('GET', f'/api/v1/sensors/{i}', cookie=ck)[1]
+    b.publish(fakehub.sensor(30, 'door', 0, dt=777001))
+    v = sv(30)
+    check('a sensor with an unknown device code is added straight away, with a generic name', v['type'] == 'unknown' and v['displayName'] == 'Sensor 30' and v['typeFrom'] == 'unknown' and not v['room'], v)
+    b.publish(fakehub.sensor(30, 'door', 14, dt=777001))
+    v = sv(30)
+    check('opening it shows it\'s an entry sensor, and the open is handled like any door', v['type'] == 'door' and v['state'] == 'open' and v['typeFrom'] == 'inferred', v)
+    b.publish(fakehub.sensor(31, 'door', 0, dt=777001))
+    check('another sensor with the same device code is recognised at once', sv(31)['type'] == 'door')
+    b.publish(fakehub.sensor(32, 'motion', 17, dt=777002)); check('motion worked out from a motion event', sv(32)['type'] == 'motion' and sv(32)['state'] == 'motion')
+    b.publish(fakehub.sensor(33, 'leak', 1, dt=777003, cl=[[int(time.time()), 20.1, 50]]))
+    v = sv(33); check('a climate reading means a water/temperature sensor, and its leak raises the alarm', v['type'] == 'leak' and v['state'] == 'wet' and v['temp'] == 20.1, v)
+    ev = s.req('GET', '/api/v1/events?limit=40', cookie=ck)[1]['events']
+    check('…the leak alarm is in history', any(e['kind'] == 'leak' and e['sensor'] == 33 for e in ev))
+    st, js = s.req('PATCH', '/api/v1/sensors/30', {'type': 'motion'}, cookie=ck)[:2]
+    b.publish(fakehub.sensor(30, 'door', 15, dt=777001))
+    check('the owner can still correct a worked-out type, and it sticks', st == 200 and sv(30)['type'] == 'motion' and sv(30)['typeFrom'] == 'owner', (st, sv(30)))
+
     print('\n== Low batteries (35 % and below by default)')
     b.publish(fakehub.sensor(20, 'leak', 0, bat=740, cl=[[int(time.time()), 19.5, 48]]))      # (740-600)/4.1 = 34 %
     b.publish(fakehub.sensor(21, 'leak', 0, bat=760))                                        # 39 %

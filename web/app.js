@@ -39,13 +39,13 @@ const pages = {
     M.renderPairing(main.querySelector('#pair'));
     M.mount(main, () => {
       const missing = S.sensors.filter(U.isMissing), groups = {};
-      S.sensors.filter(s => !U.isMissing(s)).forEach(s => (groups[s.room || 'No room yet'] ||= []).push(s));
+      S.sensors.filter(s => !U.isMissing(s)).forEach(s => (groups[s.room || 'Unset room'] ||= []).push(s));
       const card = s => U.devCard(s, { manage: true });
       M.setHTML(main.querySelector('#byroom'), (S.hub.id ? `<section class="card"><div class="eyebrow">${I('server')} Hub</div><div class="rooms">${U.hubCard({ manage: true })}</div></section>` : '')
         + (missing.length ? `<section class="card"><div class="eyebrow">${I('alert')} Missing · ${missing.length}</div>
           <div class="missing-note"><span>Not heard from in over ${S.settings.sensorMissingH || 24} h. Try a fresh battery, or remove it if it's gone for good.</span></div>
           <div class="rooms">${missing.map(card).join('')}</div></section>` : '')
-        + (Object.entries(groups).map(([room, list]) => `<section class="card"><div class="eyebrow">${esc(room)}</div><div class="rooms">${list.map(card).join('')}</div></section>`).join('')
+        + (Object.entries(groups).sort(([a], [b]) => (a === 'Unset room') - (b === 'Unset room')).map(([room, list]) => `<section class="card"><div class="eyebrow">${esc(room)}</div><div class="rooms">${list.map(card).join('')}</div></section>`).join('')
         || '<section class="card"><div class="empty">No sensors yet. Sensors already paired with the hub appear when they next report in, or add one by hand.</div></section>'));
     });
     main.addEventListener('click', e => {

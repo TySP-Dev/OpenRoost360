@@ -6,7 +6,7 @@
   'use strict';
 
   // ---------- protocol vocabulary (from docs/PROTOCOL.md) ----------
-  const TYPE_LABEL = { keypad: 'Keypad', door: 'Entry sensor', motion: 'Motion sensor', leak: 'Water leak / temp', smoke: 'Smoke listener', unknown: 'Unrecognised device' };
+  const TYPE_LABEL = { keypad: 'Keypad', door: 'Entry sensor', motion: 'Motion sensor', leak: 'Water leak / temp', smoke: 'Smoke listener', unknown: 'Sensor' };
   const AS_LABEL = { 0: 'Disarmed', 2: 'Armed Home', 8: 'Arming Away', 4: 'Armed Away' };
   const DA_LABEL = { ow: 'Owner PIN', gu: 'Guest PIN', ho: 'Hostage PIN' };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -260,7 +260,7 @@
       <dl class="kv">
         ${row('Sensor slot', esc(String(s.id)), 'id')}
         ${row('Radio address', `<span class="sd-mono">${esc(s.mac || '—')}</span>`, 'mac')}
-        ${row('Device type', `${esc(s.typeLabel)} <span class="sd-raw">(${s.dt ?? '—'})</span>`, 'dt')}
+        ${row('Device type', `${esc(s.typeLabel)} <span class="sd-raw">(${s.dt ?? '—'}${{ inferred: ' · worked out from its reports', owner: ' · set by hand', unknown: ' · not known yet' }[s.typeFrom] || ''})</span>`, 'dt')}
         ${row('Firmware', `<span class="sd-mono">${esc(s.fw || '—')}</span>`, 'fw')}
         ${row('Hardware', `<span class="sd-mono">${esc(s.hw || '—')}</span>`, 'hw')}
       </dl>
@@ -1222,8 +1222,9 @@
           ${isOwner() ? `<button type="button" class="btn btn-primary" data-start>${icon('link')} I pressed the button — watch for sensors</button>` : ''}</div>`
         : `<div class="pair pair-on">${p.active ? `<div class="pair-live"><span class="pulse"></span> Watching for new sensors <span class="pair-cd" data-cd>10:00</span>${isOwner() ? '<button type="button" class="btn" data-stop>Stop</button>' : ''}</div>` : ''}
           ${found.map(s => `<form class="pair-new" data-id="${s.id}">
-            <div class="pair-found">${icon(TYPE_ICON[s.type] || 'chip')}<div><b>${s.type === 'unknown' ? 'New device — type not recognised' : 'New ' + esc(s.typeLabel)}</b>
-              <div class="${s.type === 'unknown' ? 'f-help' : 'det'}">${s.type === 'unknown' ? `The hub reported device code <code>dt ${esc(s.dt)}</code>, which isn't in OpenRoost's table yet.` : `${icon('check')} Recognised from the hub (<code>dt ${esc(s.dt)}</code>)`}</div>
+            <div class="pair-found">${icon(TYPE_ICON[s.type] || 'chip')}<div><b>${s.type === 'unknown' ? 'New sensor — type not known yet' : 'New ' + esc(s.typeLabel)}</b>
+              <div class="${s.type === 'unknown' ? 'f-help' : 'det'}">${s.type === 'unknown' ? `Device code <code>dt ${esc(s.dt)}</code> isn't in OpenRoost's table. Open, trip or wet it and its type is worked out, or set it under Edit.`
+                : s.typeFrom === 'inferred' ? `${icon('check')} Worked out from what it reports (<code>dt ${esc(s.dt)}</code>)` : `${icon('check')} Recognised from the hub (<code>dt ${esc(s.dt)}</code>)`}</div>
               <div class="f-help">slot ${s.id} · ${esc(s.firmware || '')} · ${s.signal.rssi ?? '—'} dBm</div></div></div>
             <input class="in" name="n" placeholder="Name, e.g. ${{ door: 'Side Door', motion: 'Hallway Motion', leak: 'Under Sink' }[s.type] || 'Side Door'}" required aria-label="Sensor name" maxlength="40">
             <div class="combo"><input class="in" name="r" placeholder="Room — search or create" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Room"><ul class="combo-list" role="listbox" hidden></ul></div>
@@ -1454,7 +1455,7 @@
     const state = miss ? 'Missing' : wait ? 'Waiting' : sensorState(s);
     const act = opts.manage ? `<div class="dev-act"><button type="button" class="btn btn-sm dev-edit" data-edit="${s.id}" aria-label="${isOwner() ? 'Edit' : 'Details for'} ${esc(s.name)}">${icon(isOwner() ? 'edit' : 'eye')} ${isOwner() ? 'Edit' : 'Details'}</button>${isOwner() ? `<button type="button" class="btn btn-sm btn-icon${miss ? ' dev-rm-strong' : ' dev-rm'}" data-rm="${s.id}" title="Remove ${esc(s.name)}" aria-label="Remove ${esc(s.name)}">${icon('trash')}</button>` : ''}</div>` : '';
     return `<div class="dev ${cls}${s.named ? '' : ' unnamed'}"><div class="top"><span class="ico">${icon(TYPE_ICON[s.type] || 'chip')}</span><span class="state" title="${esc(state)}">${esc(state)}</span></div>
-      <div class="name" title="${esc(s.name)}">${esc(s.name)}</div><div class="room">${esc(s.room || s.typeLabel)}</div>
+      <div class="name" title="${esc(s.name)}">${esc(s.name)}</div><div class="room">${esc(s.room || (s.named ? 'Unset room' : s.typeLabel))}</div>
       <div class="meta">${meta}</div>${act}</div>`;
   }
   // the SmartBase itself: power, backup battery, connection. Shown first on Home and Devices.
