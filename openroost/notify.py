@@ -100,6 +100,10 @@ class Notifier:
         if channel == 'ntfy': return self.send_ntfy(st, title, detail, 'info')
         if channel == 'webhook': return self.send_webhook(st, 'test', title, detail, 'info')
         if channel == 'matrix': return self.send_matrix(st, title, detail)
+        if channel == 'matrixdm':
+            if not to or not re.fullmatch(r'@[^:\s]+:[^\s]+', to): raise NotifyError('Enter a Matrix ID like @name:example.org')
+            room, how = self.send_matrix_dm(st, to, f'{title}\nThis is a direct message test: emergency contacts get distress alerts like this.', report=True)
+            return f'Direct message sent to {to}' + (' (end-to-end encrypted)' if how == 'encrypted' else '') + '. They may need to accept the invite first.'
         raise NotifyError('Unknown channel')
 
     # ---------------------------------------------------------------- workers
@@ -321,10 +325,15 @@ class Notifier:
         room = room or self.mx_room_id(st, hs, h)
         self._mx_send(hs, h, room, text); return room
 
-    def send_matrix_dm(self, st, mxid, text):
+    def send_matrix_dm(self, st, mxid, text, report=False):
         hs, h = self._mx(st)
         dms = self.store.kv('mxdm', {})
         room = dms.get(mxid)
+        if room:                                              # the old DM may be gone (they left it): start a new one
+            code, r = mxcrypto.req('GET', f'{hs}/_matrix/client/v3/rooms/{urllib.parse.quote(room)}/members', None, h)
+            members = {e.get('state_key'): (e.get('content') or {}).get('membership') for e in r.get('chunk', [])} if code < 300 else {}
+            if code >= 300 or members.get(mxid) not in ('join', 'invite'):
+                dms.pop(mxid, None); self.store.set_kv('mxdm', dms); room = None
         if not room:
             body = {'invite': [mxid], 'is_direct': True, 'preset': 'trusted_private_chat'}
             if st.get('mxE2ee', True) and mxcrypto.available() and self.crypto.status().get('ready'):
@@ -332,8 +341,8 @@ class Notifier:
             _, r = _http('POST', f'{hs}/_matrix/client/v3/createRoom', body, h)
             room = r['room_id']; dms[mxid] = room; self.store.set_kv('mxdm', dms)
             if 'initial_state' in body: self.crypto.mark_encrypted(room)
-        self._mx_send(hs, h, room, text)
-        return room
+        how = self._mx_send(hs, h, room, text)
+        return (room, how) if report else room
 
     @staticmethod
     def matrix_base(hs):

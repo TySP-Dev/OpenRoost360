@@ -247,6 +247,16 @@ def main():
     check('test email sent to the recipients', st == 200 and 'Email alerts work' in open(mailbox).read(), js)
     n = len(fakematrix.SENT); st, js, _, _ = s.req('POST', '/api/v1/notify/test/matrix', {}, cookie=web)
     check('test Matrix message sent', st == 200 and len(fakematrix.SENT) == n + 1, js)
+    n = len(fakematrix.SENT); st, js, _, _ = s.req('POST', '/api/v1/notify/test/matrixdm', {'to': '@mum:test.local'}, cookie=web)
+    dm = fakematrix.SENT[-1] if len(fakematrix.SENT) == n + 1 else {}
+    check('test DM creates a direct chat with that person and sends to it', st == 200 and dm.get('room', '').startswith('!dm') and '@mum:test.local' in fakematrix.MEMBERS.get(dm.get('room'), ()), (js, dm))
+    n = len(fakematrix.SENT); s.req('POST', '/api/v1/notify/test/matrixdm', {'to': '@mum:test.local'}, cookie=web)
+    check('a second test DM reuses that chat', len(fakematrix.SENT) == n + 1 and fakematrix.SENT[-1]['room'] == dm.get('room'))
+    fakematrix.MEMBERS[dm['room']].discard('@mum:test.local'); n = len(fakematrix.SENT)
+    st, js, _, _ = s.req('POST', '/api/v1/notify/test/matrixdm', {'to': '@mum:test.local'}, cookie=web)
+    check('if they left that chat, a new one is started', st == 200 and fakematrix.SENT[-1]['room'] != dm['room'], (js, fakematrix.SENT[-1:]))
+    st, js, _, _ = s.req('POST', '/api/v1/notify/test/matrixdm', {'to': 'mum'}, cookie=web)
+    check('a malformed Matrix ID is refused', st == 400 and 'Matrix ID' in js['error'], js)
 
     print('\n== Alarm from the hub -> email + Matrix')
     h = FakeHub(s.lport); h.subscribe(); h.publish(status())

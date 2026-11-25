@@ -335,33 +335,37 @@ class Hub:
         except (TypeError, ValueError): code = None
         name = self._name(sid, s)
         title = None
+        # When it happened: the sensor's own time (dj.t). On battery the hub keeps events and sends them once it's back
+        # on power, minutes later, so the arrival time would be wrong.
+        at, late = self._when(dj, now)
+        lnote = f' · happened at {self._clock(at)}, sent late' if late else ''
         if kind == 'door' and code in (14, 15):
             s['state'] = 'open' if code == 14 else 'closed'; title = f'{name} {"opened" if code == 14 else "closed"}'
             if code == 14:
-                self.last_trip = (now, f'{name} opened')
-                if self.arm.get('as') in (2, 4) and not self.arm.get('countdown'):
+                self.last_trip = (at, f'{name} opened')
+                if self.arm.get('as') in (2, 4) and not self.arm.get('countdown') and not late:
                     self.arm['countdown'] = {'kind': 'entry', 'ends': now + int(self.settings().get('entryDelay') or DEFAULT_ENTRY)}; self._save_arm()
         elif kind == 'motion' and code in (17, 18):
             s['state'] = 'motion' if code == 17 else 'clear'
-            if code == 17: title = f'Motion: {name}'; self.last_trip = (now, f'motion at {name}')
+            if code == 17: title = f'Motion: {name}'; self.last_trip = (at, f'motion at {name}')
         elif kind == 'leak' and code in (0, 1):
             wet = code == 1; was = s.get('state') == 'wet'; s['state'] = 'wet' if wet else 'dry'
             if wet and not was:
-                self._event('leak', 'crit', 'Water leak', name, sid, m)
-                self._alert('leak', 'Water leak', f'{name} detects water.')
-                self._notify('leak', 'Water leak', f'{name} detects water.', 'crit')
+                self._event('leak', 'crit', 'Water leak', name + lnote, sid, m, at)
+                self._alert('leak', 'Water leak', f'{name} detects water.{lnote and " (" + lnote[3:] + ")"}')
+                self._notify('leak', 'Water leak', f'{name} detects water.{lnote and " (" + lnote[3:] + ")"}', 'crit')
             elif was and not wet:
-                self._event('leak', 'info', 'Leak cleared', f'{name} is dry again', sid, m); self._end_alert('leak')
+                self._event('leak', 'info', 'Leak cleared', f'{name} is dry again{lnote}', sid, m, at); self._end_alert('leak')
         elif kind == 'keypad':
             s['state'] = 'ok'
             if code == 12:
-                self._event('panic', 'crit', 'Panic button', f'{name}: X + OK held', sid, m)
-                self._alert('panic', 'Panic button pressed', f'Someone held X + OK on {name}.')
-                self._notify('panic', 'Panic button pressed', f'Someone held X + OK on {name}.', 'crit')
+                self._event('panic', 'crit', 'Panic button', f'{name}: X + OK held{lnote}', sid, m, at)
+                self._alert('panic', 'Panic button pressed', f'Someone held X + OK on {name}.{lnote and " (" + lnote[3:] + ")"}')
+                self._notify('panic', 'Panic button pressed', f'Someone held X + OK on {name}.{lnote and " (" + lnote[3:] + ")"}', 'crit')
         elif kind == 'smoke':
             s['state'] = 'ok'
         if s.get('state') is None: s['state'] = {'door': 'closed', 'motion': 'clear', 'leak': 'dry'}.get(kind, 'ok')
-        if title: self._event('sensor', 'info', title, meta.get('room', ''), sid, m)
+        if title: self._event('sensor', 'info', title, (meta.get('room', '') + lnote).lstrip(' ·'), sid, m, at)
         elif code == 0 and kind != 'leak': pass                 # routine check-in: no history entry
         if is_new and s.get('manual'):
             self._event('pair', 'info', f'{name} reported in', f'Added by hand; the hub reports it in slot {sid}', sid, m)
@@ -407,6 +411,22 @@ class Hub:
                 ld = dict(self.store.kv('learnedDt') or {}); ld[str(dt)] = kind; self.store.set_kv('learnedDt', ld)
             return kind, 'inferred'
         return 'unknown', 'unknown'
+
+    @staticmethod
+    def _when(dj, now):
+        """(time it happened, sent late?) from the sensor's own clock, if it's believable (not 0, not ahead, < 7 days)."""
+        try: t = float(dj.get('t') or 0)
+        except (TypeError, ValueError): t = 0
+        if not (now - 7 * 86400 < t <= now + 60): return now, False
+        return min(t, now), now - t > 60
+
+    def _clock(self, t):
+        try:
+            from zoneinfo import ZoneInfo
+            d = __import__('datetime').datetime.fromtimestamp(t, ZoneInfo(self.settings().get('tz') or 'UTC'))
+        except Exception:
+            d = __import__('datetime').datetime.fromtimestamp(t)
+        return d.strftime('%H:%M' if self.settings().get('timeFmt') == '24' else '%I:%M %p').lstrip('0')
 
     def _forget_removed(self, sid):
         st = self.settings(); m = dict(st.get('sensorMeta', {}))

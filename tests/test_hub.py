@@ -94,6 +94,22 @@ def main():
     b.publish(fakehub.sensor(30, 'door', 15, dt=777001))
     check('the owner can still correct a worked-out type, and it sticks', st == 200 and sv(30)['type'] == 'motion' and sv(30)['typeFrom'] == 'owner', (st, sv(30)))
 
+    print('\n== Events the hub held while on battery')
+    b.publish(fakehub.status(pw=0)); time.sleep(0.3)
+    check('the hub reports it\'s on battery', s.req('GET', '/api/v1/hub', cookie=ck)[1]['power'] == 'battery')
+    happened = int(time.time()) - 300                           # opened 5 minutes ago, sent now that it's back on power
+    b.publish(fakehub.status(pw=1, as_=4))
+    b.publish(fakehub.sensor(57, 'door', 14, t=happened, hub_as=4))
+    ev57 = lambda want: wait_for(lambda: next((e for e in s.req('GET', '/api/v1/events?limit=10', cookie=ck)[1]['events'] if e['sensor'] == 57 and want in e['title']), None))
+    ev = ev57('opened') or {}
+    check('a replayed event is stamped with when it happened, and says it was sent late', abs(ev['t'] - happened) < 2 and 'sent late' in ev['detail'], ev)
+    arm = s.req('GET', '/api/v1/arm', cookie=ck)[1]
+    check('…and doesn\'t start an entry countdown that ended long ago', not arm['countdown'], arm)
+    b.publish(fakehub.status(pw=1, as_=0))
+    b.publish(fakehub.sensor(57, 'door', 15))
+    ev = ev57('closed') or {}
+    check('a live event isn\'t marked late', 'sent late' not in ev['detail'] and abs(ev['t'] - time.time()) < 5, ev)
+
     print('\n== Low batteries (35 % and below by default)')
     b.publish(fakehub.sensor(20, 'leak', 0, bat=740, cl=[[int(time.time()), 19.5, 48]]))      # (740-600)/4.1 = 34 %
     b.publish(fakehub.sensor(21, 'leak', 0, bat=760))                                        # 39 %

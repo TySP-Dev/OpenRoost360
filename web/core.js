@@ -558,7 +558,8 @@
           { type: 'custom', render: 'mxroompick' },
           { k: 'mxMention', label: '@room on alarms', type: 'toggle', def: true },
           { k: 'mxE2ee', label: 'Encrypt direct messages', type: 'toggle', def: true, help: 'New DMs to emergency contacts are created end-to-end encrypted. Rooms you choose are encrypted or not by their own setting.' },
-          { type: 'custom', render: 'mxe2ee' } ],
+          { type: 'custom', render: 'mxe2ee' },
+          { type: 'custom', render: 'mxdmtest' } ],
           actions: [{ label: 'Send test message', act: 'matrixTest' }] },
         { title: 'Family & emergency contacts', fields: [{ type: 'custom', render: 'contacts' }] },
         { title: 'Emergency countdown', fields: [{ type: 'custom', render: 'escalation' }] },
@@ -833,6 +834,15 @@
       });
       document.querySelector('[data-k="lowBat"]')?.addEventListener('input', () => emit());
     },
+    mxdmtest(el) {
+      el.innerHTML = `<div class="f"><div class="f-text"><span class="f-label">Test a direct message</span><div class="f-help">Distress alerts reach emergency contacts as Matrix DMs. This sends one so you know the bot can reach them. The first one arrives as an invite to accept.</div></div>
+        <div class="f-ctl"><form class="su-row" data-dmf><input class="in" name="to" placeholder="@you:example.org" required pattern="@[^:\\s]+:[^\\s]+" data-nosave autocomplete="off" style="flex:1;min-width:150px"><button class="btn btn-sm" data-keep>Send test DM</button></form></div></div>`;
+      const f = el.querySelector('[data-dmf]'), mine = (S.contacts.find(c => c.mx) || {}).mx;
+      if (mine) f.elements.to.value = mine;
+      f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
+        try { toast(esc((await api('POST', '/notify/test/matrixdm', { to: f.elements.to.value.trim() })).result), 'ok', 6000); } catch (err) { toast(esc(err.message), 'err', 8000); }
+      }); });
+    },
     mxroompick(el) {
       el.innerHTML = `<div class="group-actions" style="margin-top:0"><button type="button" class="btn btn-sm" data-keep data-pick>${icon('list')} Choose a room</button></div><div data-rooms></div>`;
       el.querySelector('[data-pick]').addEventListener('click', e => busy(e.currentTarget, async () => {
@@ -1001,7 +1011,7 @@
             ${tiers.map(([k, l]) => `<td><input type="checkbox" data-ct="${c.id}:${k}"${c.tiers?.[k] ? ' checked' : ''} aria-label="${esc(c.name)} ${l}"></td>`).join('')}
             <td><button type="button" class="btn btn-icon" data-cdel="${c.id}" title="Remove ${esc(c.name)}">${icon('trash')}</button></td></tr>`).join('') || `<tr><td colspan="5" class="f-help">No contacts yet.</td></tr>`}</tbody></table></div>
           <form class="contact-add"><input class="in" name="n" placeholder="Name" required maxlength="80" data-nosave><input class="in" name="e" type="email" placeholder="Email" data-nosave><input class="in" name="m" placeholder="@user:matrix.org" data-nosave><button class="btn">${icon('plus')} Add</button></form>
-          <div class="group-actions"><button type="button" class="btn" data-ctest>Email a test to every contact</button></div>`;
+          <div class="group-actions"><button type="button" class="btn" data-ctest>Email a test to every contact</button><button type="button" class="btn" data-cmtest>Matrix DM a test to every contact</button></div>`;
         el.querySelectorAll('[data-ct]').forEach(i => i.addEventListener('change', () => { const [id, k] = i.dataset.ct.split(':'); const c = S.contacts.find(x => x.id == id); (c.tiers ||= {})[k] = i.checked ? 1 : 0; }));
         el.querySelectorAll('[data-cdel]').forEach(b => b.addEventListener('click', () => { S.contacts = S.contacts.filter(c => c.id != b.dataset.cdel); draw(); toast('Contact removed — Save changes to keep it', 'info'); }));
         el.querySelector('.contact-add').addEventListener('submit', e => {
@@ -1010,6 +1020,11 @@
           if (mx && !/^@[^:\s]+:[^\s]+$/.test(mx)) return toast('Matrix IDs look like <code>@name:server.org</code>', 'err');
           S.contacts.push({ id: now(), name: f.elements.n.value.trim(), email: em, mx, tiers: { distress: 1, alarms: 1, info: 0 } }); draw(); toast('Contact added — Save changes to keep it');
         });
+        el.querySelector('[data-cmtest]').addEventListener('click', e => busy(e.currentTarget, async () => {
+          const list = S.contacts.filter(c => c.mx); if (!list.length) return toast('No contacts with a Matrix ID', 'err');
+          let ok = 0; for (const c of list) { try { await api('POST', '/notify/test/matrixdm', { to: c.mx }); ok++; } catch (err) { toast(`${esc(c.mx)}: ${esc(err.message)}`, 'err', 8000); } }
+          if (ok) toast(`Test DM sent to ${ok} contact${ok === 1 ? '' : 's'}`);
+        }));
         el.querySelector('[data-ctest]').addEventListener('click', e => busy(e.currentTarget, async () => {
           const list = S.contacts.filter(c => c.email); if (!list.length) return toast('No contacts with an email address', 'err');
           let ok = 0; for (const c of list) { try { await api('POST', '/notify/test/email', { to: c.email }); ok++; } catch (err) { toast(`${esc(c.email)}: ${esc(err.message)}`, 'err', 6000); } }
@@ -1416,11 +1431,10 @@
     const p = [];
     if (!S.live) p.push('Live updates paused — reconnecting');
     if (!S.hub.id) p.push('No hub has connected yet');
-    else if (!S.hub.online) p.push(S.hub.pw === 0 ? `Hub on battery · last seen ${ago(S.hub.lastSeen)}` : `Hub not connected · last seen ${ago(S.hub.lastSeen)}`);
-    else if (S.hub.pw === 0) p.push(`Hub on battery: events arrive when it reconnects · last seen ${ago(S.hub.lastSeen)}`);
+    else if (!S.hub.online && S.hub.pw !== 0) p.push(`Hub not connected · last seen ${ago(S.hub.lastSeen)}`);   // on battery: the notice above explains
     return { ok: !p.length, problems: p };
   }
-  function healthHTML() { const h = health(); return `<a class="health ${h.ok ? 'ok' : 'bad'}" href="#settings/hub"><span class="hd"></span><span class="ht"><b>${h.ok ? 'Cloud stand-in working' : 'Cloud stand-in needs attention'}</b><small>${h.ok ? (S.hub.since ? `Hub connected for ${uptime()} · events arrive live` : `Hub last heard ${ago(S.hub.lastSeen)} · events arrive live`) : esc(h.problems.join(' · '))}</small></span>${icon('server')}</a>`; }
+  function healthHTML() { const h = health(); return `<a class="health ${h.ok ? 'ok' : 'bad'}" href="#settings/hub"><span class="hd"></span><span class="ht"><b>${h.ok ? 'Cloud stand-in working' : 'Cloud stand-in needs attention'}</b><small>${h.ok ? (S.hub.pw === 0 ? `Hub on battery · last heard ${ago(S.hub.lastSeen)} · events arrive when it's plugged in` : S.hub.since ? `Hub connected for ${uptime()} · events arrive live` : `Hub last heard ${ago(S.hub.lastSeen)} · events arrive live`) : esc(h.problems.join(' · '))}</small></span>${icon('server')}</a>`; }
   function stateInfo() {
     const alarm = S.alerts.find(a => a.active && ['intrusion', 'panic', 'fire'].includes(a.kind)), c = S.countdown, rem = remaining();
     const live = S.sensors, gone = live.filter(isMissing).length, on = live.length - gone;
@@ -1580,6 +1594,9 @@
     try { const r = await api('POST', `/escalations/${b.dataset.esccancel}/cancel`); const i = S.esc.findIndex(y => y.id === r.escalation.id); if (i >= 0) S.esc[i] = r.escalation; toast('Cancelled: the emergency contacts won\'t be told'); emit(); }
     catch (err) { toast(esc(err.message), 'err', 6000); b.disabled = false; }
   });
+  // while the hub runs on its backup battery it hangs up between check-ins and holds sensor events until it's back on power
+  const batteryNotice = () => S.hub.id && S.hub.pw === 0 ? `<div class="alert k-standin" role="status">${icon('battery')}<div><h3>Hub on battery</h3>
+    <p>It sends sensor events once it's plugged in again, stamped with when they happened. The siren and keypad still work.</p></div></div>` : '';
   const alertsHTML = () => escHTML() + S.alerts.map(a => `<div class="alert k-${esc(a.kind)}${a.active ? '' : ' ended'}">${icon(ALERT_ICON[a.kind] || 'alert')}<div><h3>${esc(a.title)}${a.active ? '' : ' (over)'}</h3><p>${esc(a.detail)} · ${ago(a.since)}</p></div>${SV_STATE.role !== 'viewer' ? `<button type="button" class="btn" data-ack="${esc(a.kind)}">Got it</button>` : ''}</div>`).join('');
   const ACTIVITY_SETS = { all: null, alerts: ['alarm', 'fire', 'panic', 'duress', 'leak'], arming: ['arm', 'disarm'], sensors: ['sensor'], system: ['system', 'power', 'pair', 'climate'] };
   function startRouter(pages, def, onRoute) {
@@ -1590,7 +1607,7 @@
 
   window.OpenRoost = {
     session, logout, gate, userMenu, SV_STATE, api, download, loadFeatures, isPlanned, plannedAttrs, defaultSettings, manualDnsHTML, bindCopy,
-    ui: { isMissing, isLow, health, healthHTML, stateInfo, ringHTML, modesHTML, previewNote, bindHome, devCard, hubCard, timeline, alertsHTML, ACTIVITY_SETS, startRouter },
+    ui: { isMissing, isLow, batteryNotice, health, healthHTML, stateInfo, ringHTML, modesHTML, previewNote, bindHome, devCard, hubCard, timeline, alertsHTML, ACTIVITY_SETS, startRouter },
     S, on, mount, emit, icon, esc, removeSensor, confirmRemoveSensor, sensorDetails, renameSensor, hubDetails, addSensorDialog, setHTML,
     SECTIONS, renderSettings, renderPairing, toast, badge, roomCombo, createRoom, applyLook, persist,
     roomListHTML,

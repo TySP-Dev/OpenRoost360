@@ -662,10 +662,11 @@ class App:
         def bundled(h, sess): h.send_json(200, services.bundled())
 
         # ============================================================ notifications
-        @R('POST', '/api/v1/notify/test/{channel}', 'owner', summary='Send a test: email, ntfy, webhook or matrix ({"to"} for email)', tags=('notify',))
+        @R('POST', '/api/v1/notify/test/{channel}', 'owner', summary='Send a test: email, ntfy, webhook, matrix, or matrixdm ({"to"}: an email address, or a Matrix ID for matrixdm)', tags=('notify',))
         def notify_test(h, sess, channel):
-            to = h.body().get('to')
-            if to: V.email(to)
+            to = (h.body().get('to') or '').strip() or None
+            if to and channel == 'email': V.email(to)
+            elif to: V.str(255)(to)
             try: h.send_json(200, {'result': self.notifier.test(channel, to)})
             except NotifyError as e: raise ApiError(400, str(e))
 

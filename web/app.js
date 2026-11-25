@@ -6,9 +6,10 @@ let route;
 function renderHeader(r) {
   const page = (r && r.page) || (route ? route().page : 'home');
   M.setHTML(document.getElementById('tabs'), TABS.map(([id, l, ic]) => `<a href="#${id}" class="${page === id ? 'on' : ''}">${I(ic)}<span>${l}</span></a>`).join(''));
-  const h = S.hub, cls = !h.online ? 'off' : h.pw === 0 || !S.live ? 'warn' : '';
+  // on battery the hub hangs up on purpose between check-ins, so "offline" would be misleading: say "on battery"
+  const h = S.hub, bat = h.id && h.pw === 0, cls = bat || !S.live ? 'warn' : !h.online ? 'off' : '';
   const up = S.update && S.update.updateAvailable && M.SV_STATE.role === 'owner';
-  M.setHTML(document.getElementById('status'), `<span class="pill ${cls}"><span class="d"></span>${h.online ? 'Hub online' : h.id ? 'Hub offline' : 'Waiting for hub'}${h.online && h.pw === 0 ? ' · on battery' : ''}${!S.live ? ' · reconnecting' : ''}</span>`
+  M.setHTML(document.getElementById('status'), `<span class="pill ${cls}" title="${bat ? 'Last heard ' + esc(F.ago(h.lastSeen)) : ''}"><span class="d"></span>${bat ? 'Hub on battery' : h.online ? 'Hub online' : h.id ? 'Hub offline' : 'Waiting for hub'}${!S.live ? ' · reconnecting' : ''}</span>`
     + (up ? ` <a class="pill warn upd" href="#settings/system"><span class="d"></span>Update ${esc(S.update.latest || 'available')}</a>` : ''));
 }
 
@@ -21,7 +22,7 @@ const pages = {
       <section class="card h-act"><div class="eyebrow">${I('list')} Recent activity <a href="#activity">History</a></div><div id="tl"></div></section></div></div>`;
     M.mount(main, () => {
       const H = (sel, html) => M.setHTML(main.querySelector(sel), html);
-      H('#al', U.alertsHTML());
+      H('#al', U.batteryNotice() + U.alertsHTML());
       const st = U.stateInfo();
       H('#hero', `${U.ringHTML(st)}<div><h2>${esc(st.title)}</h2><p>${esc(st.sub)}</p>${U.modesHTML()}${U.previewNote()}</div>`);
       H('#rooms', U.hubCard() + ([...S.sensors].sort((a, b) => U.isMissing(b) - U.isMissing(a)).map(s => U.devCard(s)).join('') || (S.hub.id ? '' : '<div class="empty">No sensors yet. They appear as the hub reports them.</div>')));
