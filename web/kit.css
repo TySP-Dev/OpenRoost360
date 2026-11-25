@@ -443,3 +443,5 @@ table.mx input{accent-color:var(--accent);width:18px;height:18px}
 .pick:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))} .pick.on{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 25%,transparent)}
 .pick b{display:block;font-weight:600} .pick small{display:block;color:var(--muted);font-size:12px;word-break:break-all} .pick-tags{display:flex;gap:4px;flex:none}
 @keyframes sheet-up{from{transform:translateY(30px);opacity:.4}to{transform:none;opacity:1}}
+.esc-state{margin-top:4px;font-size:12px;font-weight:600;display:flex;gap:5px;align-items:flex-start}.esc-state .ic{width:14px;height:14px;flex:none;margin-top:1px}
+.esc-state.yes{color:var(--ok)} .esc-state.no{color:var(--warn)}

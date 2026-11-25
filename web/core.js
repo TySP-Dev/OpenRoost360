@@ -783,6 +783,7 @@
   }
 
   // ---------- custom settings widgets ----------
+  const refreshEsc = () => document.querySelectorAll('[data-escw]').forEach(x => CUSTOM.escalation(x));
   const CUSTOM = {
     piholeSvc: el => serviceSettings(el, 'pihole'),
     mailSvc: el => serviceSettings(el, 'mail'),
@@ -1005,20 +1006,20 @@
     contacts(el) {
       const tiers = [['distress', 'Distress', 'Panic button, hostage PIN, fire'], ['alarms', 'Alarms', 'Intrusion, water leak'], ['info', 'Everything', 'Arming, low battery, hub offline…']];
       const draw = () => {
-        el.innerHTML = `<div class="f-help" style="margin-bottom:.6rem">People outside the household channels who should hear about trouble. <b>Distress</b> messages go by email <i>and</i> Matrix DM and ignore quiet hours. Saved with <b>Save changes</b>.</div>
+        el.innerHTML = `<div class="f-help" style="margin-bottom:.6rem">People outside the household channels who should hear about trouble. <b>Distress</b> messages go by email <i>and</i> Matrix DM and ignore quiet hours. Saved with <b>Save</b>.</div>
           <div class="mx-scroll"><table class="mx contacts"><thead><tr><th>Contact</th>${tiers.map(([, l, t]) => `<th title="${t}">${l}</th>`).join('')}<th></th></tr></thead><tbody>
           ${S.contacts.map(c => `<tr><td><div class="c-name">${esc(c.name)}</div><div class="f-help">${[c.email && icon('mail') + ' ' + esc(c.email), c.mx && '<span class="mx-id">[m]</span> ' + esc(c.mx)].filter(Boolean).join(' &nbsp; ')}</div></td>
             ${tiers.map(([k, l]) => `<td><input type="checkbox" data-ct="${c.id}:${k}"${c.tiers?.[k] ? ' checked' : ''} aria-label="${esc(c.name)} ${l}"></td>`).join('')}
             <td><button type="button" class="btn btn-icon" data-cdel="${c.id}" title="Remove ${esc(c.name)}">${icon('trash')}</button></td></tr>`).join('') || `<tr><td colspan="5" class="f-help">No contacts yet.</td></tr>`}</tbody></table></div>
           <form class="contact-add"><input class="in" name="n" placeholder="Name" required maxlength="80" data-nosave><input class="in" name="e" type="email" placeholder="Email" data-nosave><input class="in" name="m" placeholder="@user:matrix.org" data-nosave><button class="btn">${icon('plus')} Add</button></form>
           <div class="group-actions"><button type="button" class="btn" data-ctest>Email a test to every contact</button><button type="button" class="btn" data-cmtest>Matrix DM a test to every contact</button></div>`;
-        el.querySelectorAll('[data-ct]').forEach(i => i.addEventListener('change', () => { const [id, k] = i.dataset.ct.split(':'); const c = S.contacts.find(x => x.id == id); (c.tiers ||= {})[k] = i.checked ? 1 : 0; }));
-        el.querySelectorAll('[data-cdel]').forEach(b => b.addEventListener('click', () => { S.contacts = S.contacts.filter(c => c.id != b.dataset.cdel); draw(); toast('Contact removed — Save changes to keep it', 'info'); }));
+        el.querySelectorAll('[data-ct]').forEach(i => i.addEventListener('change', () => { const [id, k] = i.dataset.ct.split(':'); const c = S.contacts.find(x => x.id == id); (c.tiers ||= {})[k] = i.checked ? 1 : 0; refreshEsc(); }));
+        el.querySelectorAll('[data-cdel]').forEach(b => b.addEventListener('click', () => { S.contacts = S.contacts.filter(c => c.id != b.dataset.cdel); draw(); refreshEsc(); toast('Contact removed — Save to keep it', 'info'); }));
         el.querySelector('.contact-add').addEventListener('submit', e => {
           e.preventDefault(); const f = e.target, mx = f.elements.m.value.trim(), em = f.elements.e.value.trim();
           if (!em && !mx) return toast('Add an email or a Matrix ID', 'err');
           if (mx && !/^@[^:\s]+:[^\s]+$/.test(mx)) return toast('Matrix IDs look like <code>@name:server.org</code>', 'err');
-          S.contacts.push({ id: now(), name: f.elements.n.value.trim(), email: em, mx, tiers: { distress: 1, alarms: 1, info: 0 } }); draw(); toast('Contact added — Save changes to keep it');
+          S.contacts.push({ id: now(), name: f.elements.n.value.trim(), email: em, mx, tiers: { distress: 1, alarms: 1, info: 0 } }); draw(); refreshEsc(); toast('Contact added — Save to keep it');
         });
         el.querySelector('[data-cmtest]').addEventListener('click', e => busy(e.currentTarget, async () => {
           const list = S.contacts.filter(c => c.mx); if (!list.length) return toast('No contacts with a Matrix ID', 'err');
@@ -1034,14 +1035,16 @@
       draw();
     },
     escalation(el) {
+      el.dataset.escw = '1';
       const KINDS = [['intrusion', 'Break-in', 'Alarm sounding while armed'], ['fire', 'Fire alarm', 'The smoke listener hears an alarm'], ['duress', 'Distress PIN used', 'Disarmed with the hostage PIN']];
       const draw = () => {
         const e = S.settings.esc || (S.settings.esc = { room: true, responders: [] });
         e.responders ||= [];
         el.innerHTML = `<div class="f-help" style="margin-bottom:.6rem">When one of these alarms goes off, the people below are warned first and get a few seconds to cancel before the
             <b>emergency contacts</b> (above) are told. They cancel by replying <b>N</b> on Matrix, with the link in their email, or with <b>Cancel</b> in the app. If nobody cancels in time, the contacts get the alert as usual.
-            A countdown only runs if someone below can cancel it and a contact would be told. Saved with <b>Save changes</b>.</div>
-          ${KINDS.map(([k, l, d]) => { const c = e[k] ||= { on: true, secs: k === 'fire' ? 120 : 60 }; return `<div class="f"><div class="f-text"><span class="f-label">${l}</span><div class="f-help">${d}</div></div>
+            A countdown only runs if someone below can cancel it and a contact would be told; when it can't, the people below still get the alarm straight away. Saved with <b>Save</b>.</div>
+          ${KINDS.map(([k, l, d]) => { const c = e[k] ||= { on: true, secs: k === 'fire' ? 120 : 60 }; const why = escBlocker(k, e); return `<div class="f"><div class="f-text"><span class="f-label">${l}</span><div class="f-help">${d}</div>
+            <div class="esc-state ${why ? 'no' : 'yes'}">${c.on ? (why ? `${icon('alert')} Won't run: ${esc(why)}. The alarm goes out straight away.` : `${icon('check')} Will run`) : 'Off: the alarm goes out straight away'}</div></div>
             <div class="f-ctl su-row"><span class="in-unit"><input class="in in-num" type="number" min="10" max="600" value="${c.secs}" data-escsecs="${k}" data-nosave aria-label="${l}: seconds to cancel"${c.on ? '' : ' disabled'}><span class="unit">s</span></span>
             <label class="sw"><input type="checkbox" data-escon="${k}"${c.on ? ' checked' : ''} data-nosave><span class="sw-t" aria-hidden="true"></span><span class="sr">${l} countdown</span></label></div></div>`; }).join('')}
           <div class="f"><div class="f-text"><span class="f-label">Also post it in the household room</span><div class="f-help">The Matrix alert room. Only the people below can cancel there.</div></div>
@@ -1054,12 +1057,12 @@
         el.querySelectorAll('[data-escsecs]').forEach(i => i.addEventListener('change', () => { const v = Math.max(10, Math.min(600, Math.round(+i.value || 60))); i.value = v; e[i.dataset.escsecs].secs = v; }));
         el.querySelectorAll('[data-escon]').forEach(i => i.addEventListener('change', () => { e[i.dataset.escon].on = i.checked; draw(); }));
         el.querySelector('[data-escroom]').addEventListener('change', ev => { e.room = ev.target.checked; });
-        el.querySelectorAll('[data-escdel]').forEach(b => b.addEventListener('click', () => { e.responders = e.responders.filter(r => r.id != b.dataset.escdel); draw(); toast('Removed — Save changes to keep it', 'info'); }));
+        el.querySelectorAll('[data-escdel]').forEach(b => b.addEventListener('click', () => { e.responders = e.responders.filter(r => r.id != b.dataset.escdel); draw(); toast('Removed — Save to keep it', 'info'); }));
         el.querySelector('[data-escadd]').addEventListener('submit', ev => {
           ev.preventDefault(); const f = ev.target, mx = f.elements.m.value.trim(), em = f.elements.e.value.trim();
           if (!em && !mx) return toast('Add an email or a Matrix ID', 'err');
           if (mx && !/^@[^:\s]+:[^\s]+$/.test(mx)) return toast('Matrix IDs look like <code>@name:server.org</code>', 'err');
-          e.responders.push({ id: now(), name: f.elements.n.value.trim(), email: em, mx }); draw(); toast('Added — Save changes to keep it');
+          e.responders.push({ id: now(), name: f.elements.n.value.trim(), email: em, mx }); draw(); toast('Added — Save to keep it');
         });
       };
       draw();
@@ -1585,6 +1588,16 @@
   }
   const ALERT_ICON = { leak: 'leak', fire: 'fire' };
   const escLeft = x => Math.max(0, Math.ceil((x.deadline * 1000 - (Date.now() + S.escSkew)) / 1000));
+  // why an alarm's emergency countdown wouldn't run with the settings on screen (mirrors Escalations.blocker on the server)
+  function escBlocker(kind, e) {
+    const tier = { intrusion: 'alarms', fire: 'distress', duress: 'distress' }[kind];
+    const mail = S.settings.mail && S.settings.mail.mode && S.settings.mail.mode !== 'off', mx = S.settings.mxOn && hasSecret('mxToken');
+    const resp = e.responders || [];
+    if (!resp.length) return 'nobody is listed under “Who is warned and can cancel” below';
+    if (!resp.some(r => (r.email && mail) || (r.mx && mx))) return 'nobody below can be reached (email or Matrix isn\'t set up)';
+    if (!S.contacts.some(c => (c.tiers || {})[tier] && (c.email || c.mx))) return `no emergency contact has “${tier === 'alarms' ? 'Alarms' : 'Distress'}” ticked in Family & emergency contacts above, so there's nobody to tell at the end`;
+    return '';
+  }
   const escHTML = () => S.esc.filter(x => x.state === 'pending' || (x.at && Date.now() + S.escSkew - x.at * 1000 < 600000)).map(x => x.state === 'pending'
     ? `<div class="alert esc-pending" role="alert">${icon('alert')}<div><h3>${esc(x.label)} · ${escLeft(x)} s</h3><p>${esc(x.detail)} Emergency contacts are told when the countdown ends.</p></div>${SV_STATE.role !== 'viewer' ? `<button type="button" class="btn" data-esccancel="${esc(x.id)}">Cancel emergency messages</button>` : ''}</div>`
     : `<div class="alert ended${x.state === 'cancelled' ? ' esc-ok' : ''}">${icon(x.state === 'cancelled' ? 'check' : 'alert')}<div><h3>${esc(x.label)}: ${x.state === 'cancelled' ? 'cancelled' : 'emergency contacts told'}</h3><p>${x.state === 'cancelled' ? `By ${esc(x.by || '?')} (${esc(x.via || '')})` : `No one cancelled within ${x.secs} seconds${x.told && x.told.length ? ' · told ' + esc(x.told.join(', ')) : ''}`} · ${ago(x.at * 1000)}</p></div></div>`).join('');

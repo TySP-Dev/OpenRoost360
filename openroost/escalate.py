@@ -39,16 +39,47 @@ class Escalations:
         esc = st.get('esc') or {}; k = esc.get(kind) or {}
         return esc, bool(k.get('on', True)), int(k.get('secs') or KINDS[kind][1])
 
-    def applies(self, kind, st):
-        if kind not in KINDS: return False
+    def blocker(self, kind, st):
+        """Why a countdown for this alarm won't run: None (it will), 'off', or a sentence saying what's missing."""
+        if kind not in KINDS: return 'off'
         esc, on, _ = self._cfg(st, kind)
-        if not on: return False
+        if not on: return 'off'
         resp = esc.get('responders') or []
         mx_ok = bool(st.get('mxOn') and st.get('mxHs') and self.store.get_secret('mxToken'))
-        can_cancel = any(r.get('email') for r in resp) or (mx_ok and any(r.get('mx') for r in resp))
+        mail_ok = self.notifier._email_ready(st)
+        can_cancel = (mail_ok and any(r.get('email') for r in resp)) or (mx_ok and any(r.get('mx') for r in resp))
         tier = KINDS[kind][2]
         someone_to_tell = any((c.get('tiers') or {}).get(tier) and (c.get('email') or c.get('mx')) for c in st.get('contacts') or [])
-        return can_cancel and someone_to_tell
+        if not resp: return 'nobody is listed under "Who is warned and can cancel"'
+        if not can_cancel: return 'nobody under "Who is warned and can cancel" can be reached (email or Matrix isn\'t set up)'
+        if not someone_to_tell:
+            return f'no emergency contact has "{ {"alarms": "Alarms", "distress": "Distress"}[tier] }" ticked (Family & emergency contacts), so there\'s nobody to tell at the end'
+        return None
+
+    def applies(self, kind, st):
+        return self.blocker(kind, st) is None
+
+    def warn_responders(self, kind, title, detail):
+        """No countdown is running: the people on the cancel list still hear about the alarm, right away (once each, and
+        not twice if they're already a household email recipient)."""
+        st = self.store.get_settings(); esc = st.get('esc') or {}
+        site = st.get('siteName') or 'Home'
+        mx_ok = bool(st.get('mxOn') and st.get('mxHs') and self.store.get_secret('mxToken'))
+        household = {a.lower() for a in self.notifier._email_list(st)}
+        errors, told = [], []
+        for r in esc.get('responders') or []:
+            ok = []
+            if r.get('email') and r['email'].lower() not in household and self.notifier._email_ready(st):
+                t, html = emails.alert(site, kind, title, detail, 'crit', time.strftime('%A %d %B, %H:%M'), (st.get('publicUrl') or '').rstrip('/') or None,
+                                       f'You get this because {site} lists you as someone to warn about alarms.')
+                try: self.notifier.send_email(st, [r['email']], f'[{site}] {title}', t, html); ok.append('email')
+                except Exception as e: errors.append(f"email to {r['email']}: {e}")
+            if r.get('mx') and mx_ok:
+                try: self.notifier.send_matrix_dm(st, r['mx'], f'{KINDS[kind][0]}\n{title}: {detail} · {site}'); ok.append('Matrix')
+                except Exception as e: errors.append(f"Matrix DM to {r['mx']}: {e}")
+            if ok: told.append(f"{r.get('name') or r.get('email') or r.get('mx')} ({', '.join(ok)})")
+        if errors: self._problem('Alarm warning: some messages failed', '; '.join(errors), kind)
+        return told
 
     # ---- records
     def _all(self):
@@ -116,7 +147,7 @@ class Escalations:
                 except Exception as e: errors.append(f"email to {r['email']}: {e}")
         with self.lock:
             cur = self.get(eid); cur['rooms'] = [x for x in rooms if x]; cur['emails'] = mailed; self.store.set_kv('esc:' + eid, cur)
-        if errors: self._problem('Emergency countdown: some messages failed', '; '.join(errors))
+        if errors: self._problem('Emergency countdown: some messages failed', '; '.join(errors), rec['kind'])
 
     # ---- cancel
     def cancel(self, eid, by, via):
@@ -126,7 +157,7 @@ class Escalations:
             if rec['state'] != 'pending': return rec
             if time.time() > rec['deadline'] + 2: return rec          # the tick is about to send it
             rec.update(state='cancelled', by=by, via=via, at=time.time()); self._save(rec)
-        self.store.add_event(time.time(), 'system', 'info', f"Emergency messages cancelled: {rec['label'].title()}", f'By {by} ({via}). Emergency contacts were not told.')
+        self.store.add_event(time.time(), 'duress' if rec['kind'] == 'duress' else 'system', 'info', f"Emergency messages cancelled: {rec['label'].title()}", f'By {by} ({via}). Emergency contacts were not told.')
         threading.Thread(target=self._confirm, args=(rec, f"CANCELLED: {rec['label']}\nCancelled by {by} ({via}). Emergency contacts were not told."), daemon=True).start()
         return rec
 
@@ -166,11 +197,11 @@ class Escalations:
         who = '; '.join(f"{n} ({' + '.join(ch)})" for n, ch in told) or 'nobody could be reached'
         with self.lock:
             cur = self.get(rec['id']); cur.update(told=[n for n, _ in told], failed=errors); self._save(cur)
-        self.store.add_event(time.time(), 'system', 'crit', f"Emergency contacts told: {cur['label'].title()}", f"No one cancelled within {cur['secs']} seconds{note}. Told: {who}.")
+        self.store.add_event(time.time(), 'duress' if cur['kind'] == 'duress' else 'system', 'crit', f"Emergency contacts told: {cur['label'].title()}", f"No one cancelled within {cur['secs']} seconds{note}. Told: {who}.")
         text = (f"EMERGENCY MESSAGES SENT: {cur['label']}\nNo one cancelled within {cur['secs']} seconds{note}.\nTold: {who}."
                 + (f"\nCouldn't reach: {'; '.join(errors)}" if errors else ''))
         self._confirm(cur, text)
-        if errors: self._problem('Emergency messages: some failed', '; '.join(errors))
+        if errors: self._problem('Emergency messages: some failed', '; '.join(errors), cur['kind'])
 
     def _confirm(self, rec, text):
         st = self.store.get_settings()
@@ -183,9 +214,9 @@ class Escalations:
             try: self.notifier.send_email(st, rec['emails'], f'[{site}] {title}', t, html)
             except Exception as e: self.log(f'escalations: confirmation email failed: {e}')
 
-    def _problem(self, title, detail):
+    def _problem(self, title, detail, kind=None):
         self.log(f'escalations: {title}: {detail}')
-        self.store.add_event(time.time(), 'system', 'warn', title, detail[:400])
+        self.store.add_event(time.time(), 'duress' if kind == 'duress' else 'system', 'warn', title, detail[:400])   # silent duress stays hidden
 
     def _prune(self):
         cut = time.time() - KEEP_FOR

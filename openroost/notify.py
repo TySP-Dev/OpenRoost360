@@ -77,13 +77,25 @@ class Notifier:
 
     # ---------------------------------------------------------------- entry points
     def dispatch(self, kind, title, detail, sev='info'):
-        if self.esc and self.esc.applies(kind, self.store.get_settings()):
+        why = self.esc.blocker(kind, self.store.get_settings()) if self.esc else 'off'
+        if why is None:
             try: self.esc.start(kind, title, detail, sev)
             except Exception as e: self.log(f'notify: countdown failed, telling contacts now: {e!r}')
+        elif why != 'off' and not (self.esc and self.esc.pending(kind)):
+            # the countdown is on but can't run: say so in history, and still warn the people on its list
+            ek = 'duress' if kind == 'duress' else 'system'          # silent duress: history hides kind "duress" in the home
+            self.store.add_event(time.time(), ek, 'warn', 'Emergency countdown didn\'t run', f'{title}: {why}.')
+            threading.Thread(target=self._warn_list, args=(kind, title, detail), daemon=True).start()
         self.q.put((kind, title, detail, sev, False))
         if kind in URGENT:
             mins = int(self.store.get_settings().get('repeatMin') or 0)
             if mins: self.repeats[kind] = {'next': time.time() + mins * 60, 'count': 0, 'title': title, 'detail': detail, 'sev': sev}
+
+    def _warn_list(self, kind, title, detail):
+        try:
+            told = self.esc.warn_responders(kind, title, detail)
+            if told: self.store.add_event(time.time(), 'duress' if kind == 'duress' else 'system', 'info', 'Warned', f'{title}: ' + ', '.join(told))
+        except Exception as e: self.log(f'notify: warning the countdown list failed: {e!r}')
 
     def acknowledged(self, kind):
         self.repeats.pop(kind, None)
