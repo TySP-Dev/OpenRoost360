@@ -178,14 +178,14 @@ class Notifier:
             ok = []
             try:
                 if c.get('email') and self._email_ready(st):
-                    ct, ch = emails.alert(site, kind, title, detail, sev, when, None, f'You get this because {site} lists you as an emergency contact.')
+                    ct, ch = emails.alert(site, kind, title, detail, sev, when, None, 'You are receiving this notice because you are labeled as an emergency contact in OpenRoost360.')
                     self.send_email(st, [c['email']], subject, ct, ch); ok.append('email')
             except NotifyError as e: errors.append(f"{c.get('name') or c.get('email')}: {e}")
             try:
                 if c.get('mx') and st.get('mxHs') and (tier == 'distress' or kind in ('intrusion',)):
                     # unmistakable: it can land in the same chat as the countdown when a contact is also on the cancel list
                     self.send_matrix_dm(st, c['mx'], f'🚨 EMERGENCY · {site}\n{title.upper()}\n{detail}\n{when}\n'
-                                                     f'You get this because {site} lists you as an emergency contact.'); ok.append('Matrix')
+                                                     'You are receiving this notice because you are labeled as an emergency contact in OpenRoost360.'); ok.append('Matrix')
             except NotifyError as e: errors.append(f"{c.get('name') or c.get('mx')}: {e}")
             if ok: told.append((c.get('name') or c.get('email') or c.get('mx'), ok))
         return errors

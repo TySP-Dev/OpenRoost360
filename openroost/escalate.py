@@ -72,7 +72,7 @@ class Escalations:
             ok = []
             if r.get('email') and r['email'].lower() not in household and self.notifier._email_ready(st):
                 t, html = emails.alert(site, kind, title, detail, 'crit', time.strftime('%A %d %B, %H:%M'), (st.get('publicUrl') or '').rstrip('/') or None,
-                                       f'You get this because {site} lists you as someone to warn about alarms.')
+                                       'You are receiving this notice because you are labeled as someone to warn about alarms in OpenRoost360.')
                 try: self.notifier.send_email(st, [r['email']], f'[{site}] {title}', t, html); ok.append('email')
                 except Exception as e: errors.append(f"email to {r['email']}: {e}")
             if r.get('mx') and mx_ok:
