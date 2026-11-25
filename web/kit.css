@@ -413,6 +413,7 @@ table.mx input{accent-color:var(--accent);width:18px;height:18px}
 .btn-sso{display:flex;text-decoration:none}
 
 .pill.upd{text-decoration:none;margin-left:6px}
+.pill.lowbat{text-decoration:none;margin-left:6px}
 @media (max-width:480px){.pill.upd{display:none}}
 
 /* protocol log */

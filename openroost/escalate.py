@@ -21,6 +21,7 @@ from . import emails
 
 KINDS = {'intrusion': ('BREAK IN', 60, 'alarms'), 'fire': ('FIRE ALARM', 120, 'distress'), 'duress': ('DISTRESS PIN USED', 60, 'distress')}
 CANCEL_WORDS = ('n', 'no', '"n"', 'n.')
+STOP_WORDS = ('stop', 'stop duress', 'stop hostage', 'silence', 'silence duress', 'acknowledge', 'ack')
 KEEP_FOR = 7 * 86400
 
 
@@ -168,11 +169,26 @@ class Escalations:
         if not t or t['exp'] < time.time(): return None, None
         return self.get(t['eid']), t['name']
 
+    def _trusted_mx(self, st):
+        """Matrix IDs allowed to cancel/stop: the countdown's cancel list plus distress emergency contacts."""
+        ids = {r.get('mx') for r in (st.get('esc') or {}).get('responders') or [] if r.get('mx')}
+        ids |= {c.get('mx') for c in st.get('contacts') or [] if c.get('mx') and (c.get('tiers') or {}).get('distress')}
+        return ids
+
     def on_matrix(self, room, sender, body, ts):
-        if body.strip().lower() not in CANCEL_WORDS: return
-        for rec in self.pending():
-            if room in rec.get('rooms', []) and sender in rec.get('mx', []) and ts >= rec['start'] - 5:
-                self.cancel(rec['id'], sender, 'Matrix')
+        text = body.strip().lower()
+        if text in CANCEL_WORDS:
+            for rec in self.pending():
+                if room in rec.get('rooms', []) and sender in rec.get('mx', []) and ts >= rec['start'] - 5:
+                    self.cancel(rec['id'], sender, 'Matrix')
+            return
+        if text.rstrip(' .!') in STOP_WORDS:
+            st = self.store.get_settings()
+            if sender not in self._trusted_mx(st): return         # only trusted people can stop the hostage alerts
+            stopped = self.notifier.stop_duress(sender, 'Matrix')
+            msg = f'Hostage-PIN notifications stopped (by {sender}).' if stopped else 'No hostage-PIN notifications are active right now.'
+            try: self.notifier.send_matrix_text(st, msg, room)
+            except Exception as e: self.log(f'escalations: stop reply failed: {e}')
 
     # ---- deadline
     def _tick(self):

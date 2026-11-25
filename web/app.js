@@ -9,7 +9,9 @@ function renderHeader(r) {
   // on battery the hub hangs up on purpose between check-ins, so "offline" would be misleading: say "on battery"
   const h = S.hub, bat = h.id && h.pw === 0, cls = bat || !S.live ? 'warn' : !h.online ? 'off' : '';
   const up = S.update && S.update.updateAvailable && M.SV_STATE.role === 'owner';
+  const low = S.sensors.filter(U.isLow).length;
   M.setHTML(document.getElementById('status'), `<span class="pill ${cls}" title="${bat ? 'Last heard ' + esc(F.ago(h.lastSeen)) : ''}"><span class="d"></span>${bat ? 'Hub on battery' : h.online ? 'Hub online' : h.id ? 'Hub offline' : 'Waiting for hub'}${!S.live ? ' · reconnecting' : ''}</span>`
+    + (low ? ` <a class="pill warn lowbat" href="#devices" title="Replace the battery soon"><span class="d"></span>${low} low batter${low > 1 ? 'ies' : 'y'}</a>` : '')
     + (up ? ` <a class="pill warn upd" href="#settings/system"><span class="d"></span>Update ${esc(S.update.latest || 'available')}</a>` : ''));
 }
 
@@ -18,7 +20,7 @@ const pages = {
     main.innerHTML = `<div id="al"></div><div class="cols"><div class="stack">
       <section class="card hero" id="hero"></section>
       <section class="card h-rooms"><div class="eyebrow">${I('grid')} Around the house <a href="#devices">See all</a></div><div class="rooms" id="rooms"></div></section></div>
-      <div class="stack"><section class="card h-stat"><div class="stat" id="stat"></div></section><div id="health"></div>
+      <div class="stack"><div id="health"></div>
       <section class="card h-act"><div class="eyebrow">${I('list')} Recent activity <a href="#activity">History</a></div><div id="tl"></div></section></div></div>`;
     M.mount(main, () => {
       const H = (sel, html) => M.setHTML(main.querySelector(sel), html);
@@ -26,17 +28,13 @@ const pages = {
       const st = U.stateInfo();
       H('#hero', `${U.ringHTML(st)}<div><h2>${esc(st.title)}</h2><p>${esc(st.sub)}</p>${U.modesHTML()}${U.previewNote()}</div>`);
       H('#rooms', U.hubCard() + ([...S.sensors].sort((a, b) => U.isMissing(b) - U.isMissing(a)).map(s => U.devCard(s)).join('') || (S.hub.id ? '' : '<div class="empty">No sensors yet. They appear as the hub reports them.</div>')));
-      const low = S.sensors.filter(U.isLow).length;
-      const leaks = S.sensors.filter(s => s.temp != null && !U.isMissing(s));
-      const where = leaks.length ? `At the hub · sensors ${leaks.map(s => F.temp(s.temp)).join(', ')}` : 'At the hub';
-      H('#stat', `<div title="${esc(where)}"><b>${F.temp(S.hub.temp)}</b><span>Hub temp</span></div><div><b>${S.hub.hum != null ? Math.round(S.hub.hum) + '%' : '—'}</b><span>Hub humidity</span></div><div><b style="color:${low ? 'var(--warn)' : 'inherit'}">${low}</b><span>Low batteries</span></div>`);
       H('#health', U.healthHTML());
       H('#tl', U.timeline(S.events.slice(0, 8)));
     });
     U.bindHome(main);
   },
   devices(main) {
-    main.innerHTML = `<section class="card" style="margin-bottom:var(--gap)"><div class="eyebrow">${I('link')} Add a sensor${M.SV_STATE.role === 'owner' ? ' <button type="button" class="btn btn-sm" data-addman>' + I('plus') + ' Add by hand</button>' : ''}</div><div id="pair"></div></section><div id="byroom" class="stack"></div>`;
+    main.innerHTML = `<section class="card" style="margin-bottom:var(--gap)"><div class="eyebrow">${I('link')} Add a sensor${M.SV_STATE.role === 'owner' ? ' <button type="button" class="btn btn-sm" data-addman>' + I('plus') + ' Add manually</button>' : ''}</div><div id="pair"></div></section><div id="byroom" class="stack"></div>`;
     M.renderPairing(main.querySelector('#pair'));
     M.mount(main, () => {
       const missing = S.sensors.filter(U.isMissing), groups = {};
@@ -47,7 +45,7 @@ const pages = {
           <div class="missing-note"><span>Not heard from in over ${S.settings.sensorMissingH || 24} h. Try a fresh battery, or remove it if it's gone for good.</span></div>
           <div class="rooms">${missing.map(card).join('')}</div></section>` : '')
         + (Object.entries(groups).sort(([a], [b]) => (a === 'Unset room') - (b === 'Unset room')).map(([room, list]) => `<section class="card"><div class="eyebrow">${esc(room)}</div><div class="rooms">${list.map(card).join('')}</div></section>`).join('')
-        || '<section class="card"><div class="empty">No sensors yet. Sensors already paired with the hub appear when they next report in, or add one by hand.</div></section>'));
+        || '<section class="card"><div class="empty">No sensors yet. Sensors already paired with the hub appear when they next report in, or add one manually.</div></section>'));
     });
     main.addEventListener('click', e => {
       const r = e.target.closest('[data-rm]'), ed = e.target.closest('[data-edit]');

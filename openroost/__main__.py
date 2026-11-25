@@ -32,7 +32,7 @@ def run(a):
     bus = Bus()
     notifier = Notifier(store, log)
     hub = Hub(store, bus, notifier)
-    notifier.attach(bus)
+    notifier.attach(bus, hub)
 
     resolver.configure(bundled_port=services.BUNDLED_PIHOLE_DNS_PORT, bundled_on=bool(services.BUNDLED_PIHOLE_URL and services.bundled_pihole_password()))
     r = resolver.info()

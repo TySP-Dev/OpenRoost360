@@ -62,16 +62,18 @@ class Notifier:
         self.store, self.log = store, log
         self.crypto = mxcrypto.MatrixCrypto(store, log)
         self.esc = None                           # emergency countdown (attach())
+        self.hub = None                           # set by attach(); lets a Matrix "stop" clear the hub's duress alert
         self._joined = set()
         self.q = queue.Queue()
         self.repeats = {}                         # kind -> next send time, count
         threading.Thread(target=self._worker, daemon=True, name='notify').start()
         threading.Thread(target=self._repeater, daemon=True, name='notify-repeat').start()
 
-    def attach(self, bus):
+    def attach(self, bus, hub=None):
         """Start the emergency countdown and the Matrix reader (needs the live-update bus)."""
         from .escalate import Escalations
         from .mxsync import MatrixSync
+        self.hub = hub
         self.esc = Escalations(self.store, self, bus, self.log)
         self.sync = MatrixSync(self.store, self, self.esc.on_matrix, self.log)
 
@@ -97,8 +99,21 @@ class Notifier:
             if told: self.store.add_event(time.time(), 'duress' if kind == 'duress' else 'system', 'info', 'Warned', f'{title}: ' + ', '.join(told))
         except Exception as e: self.log(f'notify: warning the countdown list failed: {e!r}')
 
-    def acknowledged(self, kind):
+    def acknowledged(self, kind, by='app', via='app'):
+        """Someone has seen this alarm: stop repeating it, and cancel any countdown for it that's still running."""
         self.repeats.pop(kind, None)
+        if self.esc:
+            for rec in self.esc.pending(kind):
+                try: self.esc.cancel(rec['id'], by, via)
+                except Exception as e: self.log(f'notify: cancelling the countdown on acknowledge failed: {e!r}')
+
+    def stop_duress(self, by='app', via='app'):
+        """Stop the hostage-PIN (duress) notifications now: the repeat, any pending countdown and the hub's duress
+        alert. Returns True if anything was active to stop. Used by the app's Stop button and the Matrix "stop"."""
+        stopped = self.repeats.pop('duress', None) is not None
+        if self.hub and self.hub.ack_alert('duress', by): stopped = True      # ack_alert also calls acknowledged()
+        else: self.acknowledged('duress', by, via)                            # no hub (tests) or no live alert: still cancel countdowns
+        return stopped
 
     def test(self, channel, to=None):
         """Send a test through one channel right away; raises NotifyError with a readable reason."""
@@ -184,8 +199,9 @@ class Notifier:
             try:
                 if c.get('mx') and st.get('mxHs') and (tier == 'distress' or kind in ('intrusion',)):
                     # unmistakable: it can land in the same chat as the countdown when a contact is also on the cancel list
+                    stop = '\nReply STOP here to stop these messages.' if kind == 'duress' else ''
                     self.send_matrix_dm(st, c['mx'], f'🚨 EMERGENCY · {site}\n{title.upper()}\n{detail}\n{when}\n'
-                                                     'You are receiving this notice because you are labeled as an emergency contact in OpenRoost360.'); ok.append('Matrix')
+                                                     'You are receiving this notice because you are labeled as an emergency contact in OpenRoost360.' + stop); ok.append('Matrix')
             except NotifyError as e: errors.append(f"{c.get('name') or c.get('mx')}: {e}")
             if ok: told.append((c.get('name') or c.get('email') or c.get('mx'), ok))
         return errors

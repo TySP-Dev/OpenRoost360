@@ -149,7 +149,7 @@
     });
     stream.addEventListener('alert', e => {
       const a = j(e); S.alerts = S.alerts.filter(x => x.kind !== a.kind);
-      if (!a.acknowledged) { S.alerts.unshift(toAlert(a)); if (a.active && S.settings.alarmSound !== false) chime(); }
+      if (!a.acknowledged) { S.alerts.unshift(toAlert(a)); if (a.active && !a.silent && S.settings.alarmSound !== false) chime(); }
       emit();
     });
     stream.addEventListener('pairing', () => { api('GET', '/pairing').then(p => { S.pairing = p; emit(); }).catch(() => {}); });
@@ -260,7 +260,7 @@
       <dl class="kv">
         ${row('Sensor slot', esc(String(s.id)), 'id')}
         ${row('Radio address', `<span class="sd-mono">${esc(s.mac || '—')}</span>`, 'mac')}
-        ${row('Device type', `${esc(s.typeLabel)} <span class="sd-raw">(${s.dt ?? '—'}${{ inferred: ' · worked out from its reports', owner: ' · set by hand', unknown: ' · not known yet' }[s.typeFrom] || ''})</span>`, 'dt')}
+        ${row('Device type', `${esc(s.typeLabel)} <span class="sd-raw">(${s.dt ?? '—'}${{ inferred: ' · worked out from its reports', owner: ' · set manually', unknown: ' · not known yet' }[s.typeFrom] || ''})</span>`, 'dt')}
         ${row('Firmware', `<span class="sd-mono">${esc(s.fw || '—')}</span>`, 'fw')}
         ${row('Hardware', `<span class="sd-mono">${esc(s.hw || '—')}</span>`, 'hw')}
       </dl>
@@ -1467,7 +1467,7 @@
     const cls = miss ? 'missing' : wait ? 'waiting' : s.state === 'wet' ? 'crit' : isAlertState(s) ? 'hot' : '';
     // temperature sensors: the reading takes the signal's place (signal is in the details)
     const climate = s.temp != null ? `<span title="Temperature${s.hum != null ? ' · humidity' : ''}">${icon('thermo')}${temp(s.temp).replace(/(°)[FC]$/, '$1')}${s.hum != null ? ' ' + Math.round(s.hum) + '%' : ''}</span>` : '';
-    const meta = miss ? `<span>Last heard ${ago(s.last)}</span>` : wait ? '<span>Added by hand · not heard from yet</span>'
+    const meta = miss ? `<span>Last heard ${ago(s.last)}</span>` : wait ? '<span>Added manually · not heard from yet</span>'
       : `<span class="batt ${low ? 'low' : ''}">${icon('battery')} ${s.pct == null ? '—' : p + '%'}</span>${climate || `<span>${icon('wifi')} ${['—', 'weak', 'fair', 'good', 'great'][bars(s.rs)]}</span>`}`;
     const state = miss ? 'Missing' : wait ? 'Waiting' : sensorState(s);
     const act = opts.manage ? `<div class="dev-act"><button type="button" class="btn btn-sm dev-edit" data-edit="${s.id}" aria-label="${isOwner() ? 'Edit' : 'Details for'} ${esc(s.name)}">${icon(isOwner() ? 'edit' : 'eye')} ${isOwner() ? 'Edit' : 'Details'}</button>${isOwner() ? `<button type="button" class="btn btn-sm btn-icon${miss ? ' dev-rm-strong' : ' dev-rm'}" data-rm="${s.id}" title="Remove ${esc(s.name)}" aria-label="Remove ${esc(s.name)}">${icon('trash')}</button>` : ''}</div>` : '';
@@ -1533,7 +1533,7 @@
   function addSensorDialog() {
     const ov = document.createElement('div'); ov.className = 'kp-ov';
     ov.innerHTML = `<form class="cf sd" role="dialog" aria-modal="true" aria-labelledby="as-t">
-      <div class="sd-head"><span class="ico sd-ico">${icon('plus')}</span><div><h3 id="as-t">Add a sensor by hand</h3><div class="f-help">For a sensor that's paired with the hub but hasn't shown up</div></div>
+      <div class="sd-head"><span class="ico sd-ico">${icon('plus')}</span><div><h3 id="as-t">Add a sensor manually</h3><div class="f-help">For a sensor that's paired with the hub but hasn't shown up</div></div>
         <button type="button" class="btn btn-icon sd-x" data-cancel aria-label="Close">${icon('x')}</button></div>
       <div class="sd-sec">Heard from, but not in your list</div>
       <div class="untracked" data-untracked><div class="scan-wait"><span class="spin"></span> Looking…</div></div>
@@ -1625,7 +1625,14 @@
     return isDismissed('battery') ? '' : `<div class="alert k-standin" role="status">${icon('battery')}<div><h3>Hub on battery</h3>
     <p>It sends sensor events once it's plugged in again, stamped with when they happened. The siren and keypad still work.</p></div>${xBtn('battery')}</div>`;
   }
-  const alertsHTML = () => escHTML() + S.alerts.filter(a => !isDismissed(`alert:${a.kind}:${a.since}`)).map(a => `<div class="alert k-${esc(a.kind)}${a.active ? '' : ' ended'}">${icon(ALERT_ICON[a.kind] || 'alert')}<div><h3>${esc(a.title)}${a.active ? '' : ' (over)'}</h3><p>${esc(a.detail)} · ${ago(a.since)}</p></div>${SV_STATE.role !== 'viewer' ? `<button type="button" class="btn" data-ack="${esc(a.kind)}" title="Acknowledge for everyone: stops repeat notifications">Got it</button>` : ''}${xBtn(`alert:${a.kind}:${a.since}`)}</div>`).join('');
+  const alertsHTML = () => escHTML() + S.alerts.filter(a => !isDismissed(`alert:${a.kind}:${a.since}`)).map(a => {
+    const duress = a.kind === 'duress';
+    const btn = SV_STATE.role !== 'viewer'
+      ? `<button type="button" class="btn${duress ? ' btn-primary' : ''}" data-ack="${esc(a.kind)}" title="${duress ? 'Stop the repeating hostage-PIN emails and Matrix messages, for everyone' : 'Acknowledge for everyone: stops repeat notifications'}">${duress ? 'Stop notifications' : 'Got it'}</button>`
+      : '';
+    const hint = duress ? `<p class="f-help">Your contacts are still being notified. They can also reply <b>STOP</b> to the bot in Matrix.</p>` : '';
+    return `<div class="alert k-${esc(a.kind)}${a.active ? '' : ' ended'}">${icon(ALERT_ICON[a.kind] || 'alert')}<div><h3>${esc(a.title)}${a.active ? '' : ' (over)'}</h3><p>${esc(a.detail)} · ${ago(a.since)}</p>${hint}</div>${btn}${xBtn(`alert:${a.kind}:${a.since}`)}</div>`;
+  }).join('');
   const ACTIVITY_SETS = { all: null, alerts: ['alarm', 'fire', 'panic', 'duress', 'leak'], arming: ['arm', 'disarm'], sensors: ['sensor'], system: ['system', 'power', 'pair', 'climate'] };
   function startRouter(pages, def, onRoute) {
     const route = () => { const [page, sub] = (location.hash.slice(1) || def).split('/'); return { page: pages[page] ? page : def, sub }; };

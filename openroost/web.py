@@ -459,7 +459,7 @@ class App:
 
         # ============================================================ home & hub (read)
         @R('GET', '/api/v1/overview', 'viewer', summary='Everything the home screen needs in one call', tags=('hub',))
-        def overview(h, sess): h.send_json(200, hub.overview())
+        def overview(h, sess): h.send_json(200, hub.overview(sess['user']['role'] == 'owner'))
 
         @R('GET', '/api/v1/hub', 'viewer', summary='Hub status', tags=('hub',))
         def hub_get(h, sess): h.send_json(200, hub.hub_view())
@@ -470,7 +470,7 @@ class App:
         P('POST', '/api/v1/arm', 'hub.arm', need='member', summary='Arm or disarm: {"mode": "off" | "home" | "away", "pin"?}')
 
         @R('GET', '/api/v1/alerts', 'viewer', summary='Active and recent alarms', tags=('hub',))
-        def alerts(h, sess): h.send_json(200, {'alerts': hub.alerts_view()})
+        def alerts(h, sess): h.send_json(200, {'alerts': hub.alerts_view(sess['user']['role'] == 'owner')})
 
         @R('POST', '/api/v1/alerts/{kind}/ack', 'member', summary='Acknowledge an alarm (stops repeats)', tags=('hub',))
         def ack(h, sess, kind):
@@ -521,7 +521,7 @@ class App:
         @R('GET', '/api/v1/sensors/untracked', 'viewer', summary='Devices the hub has reported that aren\'t in the sensor list: ID, type, last heard', tags=('sensors',))
         def sensors_untracked(h, sess): h.send_json(200, {'devices': hub.untracked_view()})
 
-        @R('POST', '/api/v1/sensors', 'owner', summary='Add a sensor by hand: {"id" (slot), "type", "name", "room"?}. It shows as waiting until the hub reports that slot', tags=('sensors',))
+        @R('POST', '/api/v1/sensors', 'owner', summary='Add a sensor manually: {"id" (slot), "type", "name", "room"?}. It shows as waiting until the hub reports that slot', tags=('sensors',))
         def sensor_add(h, sess):
             b = h.body()
             try: sid = int(b.get('id'))
@@ -1071,13 +1071,13 @@ class App:
 
             def _stream(self, bus, sess):
                 owner = sess['user']['role'] == 'owner'      # the protocol log and silent (hostage-PIN) countdowns are for owners only
-                q = bus.subscribe(None if owner else (lambda m: m['type'] != 'wire' and not (m['type'] == 'escalation' and m['data'].get('silent'))))
+                q = bus.subscribe(None if owner else (lambda m: m['type'] != 'wire' and not (m['type'] in ('escalation', 'alert') and m['data'].get('silent'))))
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream'); self.send_header('X-Accel-Buffering', 'no')
                 self.end_headers()
                 self.close_connection = True
                 try:
-                    self.wfile.write(bus.sse({'id': 0, 'type': 'hello', 'data': app.hub.overview()})); self.wfile.flush()
+                    self.wfile.write(bus.sse({'id': 0, 'type': 'hello', 'data': app.hub.overview(owner)})); self.wfile.flush()
                     last = time.time()
                     while True:
                         if sess['sid'] and not app.store.session(self.bearer() or self.cookie_token()): break   # signed out elsewhere

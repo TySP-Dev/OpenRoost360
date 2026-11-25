@@ -100,9 +100,10 @@ class Hub:
         if self.notifier: self.notifier.dispatch(kind, title, detail, sev)
 
     def _alert(self, kind, title, detail):
-        a = {'kind': kind, 'title': title, 'detail': detail, 'since': time.time(), 'active': True}
+        silent = kind == 'duress' and self.settings().get('duressSilent', True)
+        a = {'kind': kind, 'title': title, 'detail': detail, 'since': time.time(), 'active': True, 'silent': silent}
         self.alerts[kind] = a; self.store.save_alert(kind, a)
-        if not (kind == 'duress' and self.settings().get('duressSilent', True)): self.bus.publish('alert', a)
+        self.bus.publish('alert', a)   # silent duress is tagged so the stream hides it from everyone but owners
 
     def _end_alert(self, kind):
         a = self.alerts.get(kind)
@@ -368,7 +369,7 @@ class Hub:
         if title: self._event('sensor', 'info', title, (meta.get('room', '') + lnote).lstrip(' ·'), sid, m, at)
         elif code == 0 and kind != 'leak': pass                 # routine check-in: no history entry
         if is_new and s.get('manual'):
-            self._event('pair', 'info', f'{name} reported in', f'Added by hand; the hub reports it in slot {sid}', sid, m)
+            self._event('pair', 'info', f'{name} reported in', f'Added manually; the hub reports it in slot {sid}', sid, m)
         elif is_new:
             self._event('pair', 'info', 'New sensor found', f'{TYPE_LABEL.get(kind, "Device")} in slot {sid}'
                         + (' (type worked out from what it reports)' if how == 'inferred' else ' (type not known yet)' if kind == 'unknown' else ''), sid, m)
@@ -578,16 +579,16 @@ class Hub:
         out = [self.sensor_view(i) for i in sorted(self.sensors)]
         return [x for x in out if x and (include_removed or not x['removed'])]
 
-    def alerts_view(self):
+    def alerts_view(self, owner=False):
         silent = self.settings().get('duressSilent', True)
-        return sorted([a for a in self.alerts.values() if not (a['kind'] == 'duress' and silent)], key=lambda a: -a['since'])
+        return sorted([a for a in self.alerts.values() if owner or not (a['kind'] == 'duress' and silent)], key=lambda a: -a['since'])
 
     def ack_alert(self, kind, who):
         a = self.alerts.pop(kind, None)
         if not a: return False
         self.store.drop_alert(kind); self.bus.publish('alert', {'kind': kind, 'acknowledged': True})
         self._event('system', 'info', f'{a["title"]} acknowledged', f'by {who}')
-        if self.notifier: self.notifier.acknowledged(kind)
+        if self.notifier: self.notifier.acknowledged(kind, who, 'app')
         return True
 
     def pairing_view(self):
@@ -597,9 +598,9 @@ class Hub:
         return {'active': active, 'until': p.get('until') if active else None, 'since': p.get('since'),
                 'found': [f for f in found if f and not f['removed'] and not f['named']]}
 
-    def overview(self):
+    def overview(self, owner=False):
         sensors = self.sensors_view()
-        return {'hub': self.hub_view(), 'arm': self.arm_view(), 'alerts': self.alerts_view(),
+        return {'hub': self.hub_view(), 'arm': self.arm_view(), 'alerts': self.alerts_view(owner),
                 'sensors': {'total': len(sensors), 'missing': sum(s['missing'] for s in sensors), 'lowBattery': sum(bool(s['battery']['low']) for s in sensors),
                             'open': sum(s['state'] in ('open', 'wet') for s in sensors), 'unnamed': sum(not s['named'] for s in sensors)},
                 'listener': self.listener_view()}
