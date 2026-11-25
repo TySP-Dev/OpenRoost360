@@ -1598,9 +1598,21 @@
     if (!S.contacts.some(c => (c.tiers || {})[tier] && (c.email || c.mx))) return `no emergency contact has “${tier === 'alarms' ? 'Alarms' : 'Distress'}” ticked in Family & emergency contacts above, so there's nobody to tell at the end`;
     return '';
   }
+  // dismissed notices: hidden in this browser only (an alarm's "Got it" still acknowledges it for everyone)
+  const DKEY = 'or360.dismissed';
+  let dismissed = {};
+  try { dismissed = JSON.parse(localStorage.getItem(DKEY) || '{}') || {}; } catch (e) { dismissed = {}; }
+  const isDismissed = id => (dismissed[id] || 0) > Date.now();
+  function setDismissed(id, on) {
+    if (on) dismissed[id] = Date.now() + 7 * 86400000; else delete dismissed[id];
+    Object.keys(dismissed).forEach(k => { if (dismissed[k] < Date.now()) delete dismissed[k]; });
+    try { localStorage.setItem(DKEY, JSON.stringify(dismissed)); } catch (e) { /* private window: hidden until reload */ }
+  }
+  const xBtn = id => `<button type="button" class="alert-x" data-dismiss="${esc(id)}" aria-label="Dismiss" title="Dismiss">${icon('x')}</button>`;
+  document.addEventListener('click', e => { const b = e.target.closest('[data-dismiss]'); if (b) { setDismissed(b.dataset.dismiss, true); emit(); } });
   const escHTML = () => S.esc.filter(x => x.state === 'pending' || (x.at && Date.now() + S.escSkew - x.at * 1000 < 600000)).map(x => x.state === 'pending'
     ? `<div class="alert esc-pending" role="alert">${icon('alert')}<div><h3>${esc(x.label)} · ${escLeft(x)} s</h3><p>${esc(x.detail)} Emergency contacts are told when the countdown ends.</p></div>${SV_STATE.role !== 'viewer' ? `<button type="button" class="btn" data-esccancel="${esc(x.id)}">Cancel emergency messages</button>` : ''}</div>`
-    : `<div class="alert ended${x.state === 'cancelled' ? ' esc-ok' : ''}">${icon(x.state === 'cancelled' ? 'check' : 'alert')}<div><h3>${esc(x.label)}: ${x.state === 'cancelled' ? 'cancelled' : 'emergency contacts told'}</h3><p>${x.state === 'cancelled' ? `By ${esc(x.by || '?')} (${esc(x.via || '')})` : `No one cancelled within ${x.secs} seconds${x.told && x.told.length ? ' · told ' + esc(x.told.join(', ')) : ''}`} · ${ago(x.at * 1000)}</p></div></div>`).join('');
+    : isDismissed('esc:' + x.id) ? '' : `<div class="alert ended${x.state === 'cancelled' ? ' esc-ok' : ''}">${icon(x.state === 'cancelled' ? 'check' : 'alert')}<div><h3>${esc(x.label)}: ${x.state === 'cancelled' ? 'cancelled' : 'emergency contacts told'}</h3><p>${x.state === 'cancelled' ? `By ${esc(x.by || '?')} (${esc(x.via || '')})` : `No one cancelled within ${x.secs} seconds${x.told && x.told.length ? ' · told ' + esc(x.told.join(', ')) : ''}`} · ${ago(x.at * 1000)}</p></div>${xBtn('esc:' + x.id)}</div>`).join('');
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-esccancel]'); if (!b) return;
     b.disabled = true;
@@ -1608,9 +1620,12 @@
     catch (err) { toast(esc(err.message), 'err', 6000); b.disabled = false; }
   });
   // while the hub runs on its backup battery it hangs up between check-ins and holds sensor events until it's back on power
-  const batteryNotice = () => S.hub.id && S.hub.pw === 0 ? `<div class="alert k-standin" role="status">${icon('battery')}<div><h3>Hub on battery</h3>
-    <p>It sends sensor events once it's plugged in again, stamped with when they happened. The siren and keypad still work.</p></div></div>` : '';
-  const alertsHTML = () => escHTML() + S.alerts.map(a => `<div class="alert k-${esc(a.kind)}${a.active ? '' : ' ended'}">${icon(ALERT_ICON[a.kind] || 'alert')}<div><h3>${esc(a.title)}${a.active ? '' : ' (over)'}</h3><p>${esc(a.detail)} · ${ago(a.since)}</p></div>${SV_STATE.role !== 'viewer' ? `<button type="button" class="btn" data-ack="${esc(a.kind)}">Got it</button>` : ''}</div>`).join('');
+  function batteryNotice() {
+    if (!(S.hub.id && S.hub.pw === 0)) { if (dismissed.battery) setDismissed('battery', false); return ''; }   // shows again next time
+    return isDismissed('battery') ? '' : `<div class="alert k-standin" role="status">${icon('battery')}<div><h3>Hub on battery</h3>
+    <p>It sends sensor events once it's plugged in again, stamped with when they happened. The siren and keypad still work.</p></div>${xBtn('battery')}</div>`;
+  }
+  const alertsHTML = () => escHTML() + S.alerts.filter(a => !isDismissed(`alert:${a.kind}:${a.since}`)).map(a => `<div class="alert k-${esc(a.kind)}${a.active ? '' : ' ended'}">${icon(ALERT_ICON[a.kind] || 'alert')}<div><h3>${esc(a.title)}${a.active ? '' : ' (over)'}</h3><p>${esc(a.detail)} · ${ago(a.since)}</p></div>${SV_STATE.role !== 'viewer' ? `<button type="button" class="btn" data-ack="${esc(a.kind)}" title="Acknowledge for everyone: stops repeat notifications">Got it</button>` : ''}${xBtn(`alert:${a.kind}:${a.since}`)}</div>`).join('');
   const ACTIVITY_SETS = { all: null, alerts: ['alarm', 'fire', 'panic', 'duress', 'leak'], arming: ['arm', 'disarm'], sensors: ['sensor'], system: ['system', 'power', 'pair', 'climate'] };
   function startRouter(pages, def, onRoute) {
     const route = () => { const [page, sub] = (location.hash.slice(1) || def).split('/'); return { page: pages[page] ? page : def, sub }; };

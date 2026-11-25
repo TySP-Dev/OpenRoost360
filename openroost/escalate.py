@@ -40,7 +40,8 @@ class Escalations:
         return esc, bool(k.get('on', True)), int(k.get('secs') or KINDS[kind][1])
 
     def blocker(self, kind, st):
-        """Why a countdown for this alarm won't run: None (it will), 'off', or a sentence saying what's missing."""
+        """Why a countdown for this alarm won't run: None (it will), 'off', 'unset' (nobody on its list), or a sentence
+        saying what's missing."""
         if kind not in KINDS: return 'off'
         esc, on, _ = self._cfg(st, kind)
         if not on: return 'off'
@@ -50,7 +51,7 @@ class Escalations:
         can_cancel = (mail_ok and any(r.get('email') for r in resp)) or (mx_ok and any(r.get('mx') for r in resp))
         tier = KINDS[kind][2]
         someone_to_tell = any((c.get('tiers') or {}).get(tier) and (c.get('email') or c.get('mx')) for c in st.get('contacts') or [])
-        if not resp: return 'nobody is listed under "Who is warned and can cancel"'
+        if not resp: return 'unset'                                 # never set up: alarms go out as usual, no note needed
         if not can_cancel: return 'nobody under "Who is warned and can cancel" can be reached (email or Matrix isn\'t set up)'
         if not someone_to_tell:
             return f'no emergency contact has "{ {"alarms": "Alarms", "distress": "Distress"}[tier] }" ticked (Family & emergency contacts), so there\'s nobody to tell at the end'

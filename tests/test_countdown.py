@@ -87,6 +87,11 @@ def main():
     check('the skipped-countdown and warned entries are filed as duress (hidden from history when silent)',
           evs and all(e['kind'] == 'duress' for e in evs if e['title'] in ("Emergency countdown didn't run", 'Warned')) and any(e['title'] == 'Warned' for e in evs), evs)
 
+    print('\n== Countdown never set up (nobody on its list)')
+    st, n, sent = setup({**BASE, 'contacts': [], 'esc': {**BASE['esc'], 'responders': []}})
+    n.dispatch('intrusion', 'Intrusion alarm', 'x', 'crit'); time.sleep(0.5)
+    check('no "didn\'t run" note for a countdown nobody set up', not any(e['title'] == "Emergency countdown didn't run" for e in st.events(20)))
+
     print('\n== Countdown switched off')
     st, n, sent = setup({**BASE, 'contacts': [], 'esc': {**BASE['esc'], 'intrusion': {'on': False, 'secs': 60}}})
     n.dispatch('intrusion', 'Intrusion alarm', 'x', 'crit'); time.sleep(0.5)
